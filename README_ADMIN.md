@@ -81,6 +81,25 @@ Les scripts ne sont **pas** à la racine du clone : tout est sous `**.raguia_ag
 
 Depuis la racine du clone : `./.raguia_agent/test.sh` ou `.\.raguia_agent\test.bat`.
 
+### Lancer l’agent en arrière-plan (sans garder le terminal ouvert)
+
+Un script lancé dans un terminal reste lié à cette session : **fermer la fenêtre ou quitter le terminal coupe en général l’agent** (signal envoyé au groupe de processus).
+
+**Solution recommandée pour un usage continu** : faire installer le **démarrage automatique** par `install.sh` / `install.bat` (LaunchAgent sous macOS, raccourci dans le dossier **Démarrage** sous Windows, unité **systemd** utilisateur sous Linux). L’agent redémarre alors à l’ouverture de session **sans dépendre d’un terminal**, comme décrit dans le tableau « Démarrage automatique » ci‑dessus.
+
+**Sans changer l’installation — détacher la session tout de suite (macOS / Linux)** : depuis le dossier `.raguia_agent` du clone :
+
+```bash
+cd /chemin/vers/raguia-agent-local/.raguia_agent
+nohup ./start.sh >> "$HOME/.raguia/agent.log" 2>&1 &
+```
+
+Vous pouvez fermer le terminal ; le processus continue (`nohup` limite l’effet du « raccroché »). Sur **zsh**, variante : `./start.sh &` puis la commande `disown` dans le même shell.
+
+**Instance unique** : l’agent refuse une deuxième copie simultanée (`~/.raguia/agent.pid`). Ne relancez pas `start.sh` si l’icône ou le service tourne déjà.
+
+**Windows** : pour ne pas bloquer une fenêtre CMD, utilisez le raccourci créé par l’installateur dans **Démarrage**, ou lancez `start.bat` via `Start-Process` depuis PowerShell si besoin ; le démarrage automatique reste la méthode la plus simple.
+
 ### Mise à jour complète du dépôt (équivalent à « refaire » git clone + dépendances)
 
 Sans refaire `install.sh` pour la config ni le jeton :
@@ -126,6 +145,7 @@ Installation manuelle du démarrage (sans passer par l’installateur) : possib
 ## 4. Dépannage Administrateur
 
 - **Erreurs 401/403** : Vérifier le jeton et l’URL du portail dans `.raguia_agent/raguia_agent.yaml`. Testez avec `cd .raguia_agent && ./test.sh` (ou `.\test.bat` sous Windows).
+- **401 juste après quitter puis relancer `start.sh`** : ce n’est pas forcément une expiration. Souvent la variable **`RAGUIA_AGENT_TOKEN`** (exportée dans le shell, ex. `.zshrc`) **écrase** le jeton du YAML — vérifier avec `echo $RAGUIA_AGENT_TOKEN`, tester `unset RAGUIA_AGENT_TOKEN` puis relancer depuis `.raguia_agent`. Autre cause : jeton dans le **trousseau** (`__RAGUIA_KEYRING__` dans le YAML) et lecture impossible ; les logs indiquent le fichier de config et si le jeton vient de l’environnement.
 - **Fichiers ignorés** : L'agent ignore volontairement les fichiers temporaires (`~$*.docx`, `.tmp`).
 - **Logs** : Situés dans `~/.raguia/agent.log` avec rotation automatique (`agent.log.1` ... `agent.log.5`).
 

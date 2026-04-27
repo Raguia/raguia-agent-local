@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from .secret_store import keyring_available, load_token, save_token
+from .secret_store import KEYRING_SENTINEL, keyring_available, load_token, save_token
 
 log = logging.getLogger(__name__)
 
@@ -155,7 +155,11 @@ def load_config(path: Path | None = None) -> AgentConfig:
     if os.environ.get("RAGUIA_CLIENT_SLUG"):
         cfg.client_slug = os.environ["RAGUIA_CLIENT_SLUG"]
     if os.environ.get("RAGUIA_AGENT_TOKEN"):
-        cfg.agent_token = os.environ["RAGUIA_AGENT_TOKEN"]
+        cfg.agent_token = os.environ["RAGUIA_AGENT_TOKEN"].strip()
+        log.info(
+            "Jeton agent charge depuis la variable RAGUIA_AGENT_TOKEN "
+            "(prioritaire — le champ agent_token du fichier YAML est ignore)."
+        )
     if os.environ.get("RAGUIA_WATCH_PARENT"):
         cfg.watch_parent = os.environ["RAGUIA_WATCH_PARENT"]
     if os.environ.get("RAGUIA_DRY_RUN", "").lower() in ("1", "true", "yes"):
@@ -169,8 +173,31 @@ def load_config(path: Path | None = None) -> AgentConfig:
     cfg.cfg_path = path
     _migrate_plaintext_token_to_keyring(path, raw_data)
     _enforce_secure_token_storage(cfg, path, raw_data)
+    _validate_resolved_agent_token(cfg, raw_data)
 
     return cfg
+
+
+def _validate_resolved_agent_token(
+    cfg: AgentConfig, raw_data: dict[str, Any] | None
+) -> None:
+    """Refuse un demarrage incoherent : YAML reference le trousseau mais lecture vide."""
+    if os.environ.get("RAGUIA_AGENT_TOKEN"):
+        return
+    if not raw_data:
+        return
+    file_marker = str(raw_data.get("agent_token") or "").strip()
+    if file_marker != KEYRING_SENTINEL:
+        return
+    if (cfg.agent_token or "").strip():
+        return
+    raise ValueError(
+        "Le fichier de configuration reference le trousseau (__RAGUIA_KEYRING__) mais "
+        "aucun jeton n'a pu etre lu (vide). Souvent : tropseau temporairement indisponible, "
+        "ou chemin de config different d'une session a l'autre. "
+        "Relancez, ou definissez RAGUIA_AGENT_TOKEN, ou mettez le jeton en clair dans YAML "
+        "(secure_token_storage: false) puis remettez le trousseau via le menu de l'icone."
+    )
 
 
 def _migrate_plaintext_token_to_keyring(path: Path | None, raw_data: dict[str, Any] | None) -> None:
@@ -220,8 +247,6 @@ def _enforce_secure_token_storage(
             stored = str(raw.get("agent_token") or "").strip()
         except Exception:
             stored = ""
-    from .secret_store import KEYRING_SENTINEL
-
     if stored and stored != KEYRING_SENTINEL:
         raise ValueError(
             "Configuration refusee: token en clair detecte alors que secure_token_storage=true. "

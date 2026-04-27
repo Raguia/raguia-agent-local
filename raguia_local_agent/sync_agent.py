@@ -23,8 +23,10 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+import httpx
+
 from . import __version__ as AGENT_VERSION
-from .api_client import PortalApiClient
+from .api_client import PortalApiClient, http_response_detail
 from .config import AgentConfig
 from .queue_store import MAX_TRIES_BEFORE_STUCK, QueueStore
 from .state_store import StateStore
@@ -61,6 +63,8 @@ class SyncAgent:
         # Callback pour le tray (optionnel)
         self.on_status_change: Optional[Callable] = None
         self._pending_hint_ts: float = 0.0
+        self._last_401_log_ts: float = 0.0
+        self._last_auth_skip_log_ts: float = 0.0
 
     def _get_local_folder_size(self) -> int:
         total = 0
@@ -180,6 +184,15 @@ class SyncAgent:
                         )
                 else:
                     raise ValueError(f"reponse inattendue : {res!r}")
+            except httpx.HTTPStatusError as e:
+                detail = http_response_detail(e.response)
+                err_txt = detail or str(e)
+                self.queue.mark_error(rel, err_txt)
+                metrics["errors"].append(err_txt)
+                if e.response.status_code == 401:
+                    log.error("delete-local refuse (401) : %s", detail)
+                else:
+                    log.exception("Suppression distante impossible pour %s", rel)
             except Exception as e:
                 log.exception("Suppression distante impossible pour %s", rel)
                 self.queue.mark_error(rel, str(e))
@@ -251,10 +264,25 @@ class SyncAgent:
             for p, meta in zip(paths_ok, metas_ok):
                 self.queue.mark_done(meta["relative_path"])
             log.info("Cycle '%s' : %d fichier(s) uploades", reason, len(paths_ok))
+        except httpx.HTTPStatusError as e:
+            detail = http_response_detail(e.response)
+            err_txt = detail or str(e)
+            metrics["errors"].append(err_txt)
+            for _p, meta in zip(paths_ok, metas_ok):
+                self.queue.mark_error(meta["relative_path"], err_txt)
+            if e.response.status_code == 401:
+                log.error(
+                    "Upload refuse (401) : %s — regenerez le jeton depuis le portail "
+                    "(meme URL api_base / meme backend qu'a l'emission du JWT en dev).",
+                    detail,
+                )
+                self._emit("error", (detail or "401 Unauthorized")[:120])
+            else:
+                log.exception("Upload echoue (%s)", reason)
+                self._emit("error", err_txt[:80])
         except Exception as e:
             log.exception("Upload echoue (%s)", reason)
             metrics["errors"].append(str(e))
-            # Requeue pour reessai (attempts deja incrementes dans pop_batch)
             for p, meta in zip(paths_ok, metas_ok):
                 rel = meta["relative_path"]
                 self.queue.mark_error(rel, str(e))
@@ -305,12 +333,41 @@ class SyncAgent:
                 # --- Polling sync-status ---
                 st: dict = {}
                 sync_ok = True
+                auth_failure_401 = False
                 try:
                     st = self.client.sync_status()
                 except Exception as e:
                     sync_ok = False
-                    log.warning("sync-status inaccessible : %s", e)
-                    self._emit("warning", "Portail inaccessible")
+                    # Un seul bloc : garantit la detection 401 meme si httpx change ou branche mal ordonnée.
+                    he = e if isinstance(e, httpx.HTTPStatusError) else None
+                    detail = http_response_detail(he.response) if he else ""
+                    if he and he.response.status_code == 401:
+                        auth_failure_401 = True
+                        now_t = time.time()
+                        if now_t - self._last_401_log_ts >= 120:
+                            self._last_401_log_ts = now_t
+                            log.error(
+                                "Jeton agent refuse par le portail (401) : %s\n"
+                                "  → Portail : emettre un nouveau jeton (POST …/agent/issue-token) "
+                                "et menu icone « Mettre a jour le jeton JWT », ou verifier api_base.\n"
+                                "  → Dev local : le JWT doit etre signe par ce backend (SECRET_KEY), "
+                                "pas copie depuis la prod.",
+                                detail or e,
+                            )
+                        self._emit(
+                            "error",
+                            (detail or "401 — jeton agent invalide")[:160],
+                        )
+                    elif he:
+                        log.warning(
+                            "sync-status HTTP %s : %s",
+                            he.response.status_code,
+                            detail or e,
+                        )
+                        self._emit("warning", "Portail inaccessible")
+                    else:
+                        log.warning("sync-status inaccessible : %s", e)
+                        self._emit("warning", "Portail inaccessible")
 
                 if sync_ok:
                     self._apply_remote_deletions(st)
@@ -343,7 +400,18 @@ class SyncAgent:
                 # Sans sync-status : pas de quota serveur (on laisse run_cycle sans plafond distant)
                 limit_b = st.get("max_storage_bytes") if sync_ok else None
 
-                if reason:
+                skip_due_auth = auth_failure_401 and reason not in ("force",)
+                if reason and skip_due_auth:
+                    now_s = time.time()
+                    if now_s - self._last_auth_skip_log_ts >= 120:
+                        self._last_auth_skip_log_ts = now_s
+                        log.warning(
+                            "Cycle %s ignore tant que le jeton est refuse (401). "
+                            "Forcez « Synchroniser maintenant » apres correction, ou mettez a jour le JWT.",
+                            reason,
+                        )
+
+                if reason and not skip_due_auth:
                     last_cooldown_ts = time.time()
                     m = self.run_cycle(reason, limit_bytes=limit_b)
                     err_str = ("; ".join(m["errors"])[:2000] if m.get("errors") else None)
@@ -367,8 +435,11 @@ class SyncAgent:
                             log.warning("sync-complete : %s", e)
                     if not errs:
                         self._emit("idle")
-                else:
-                    if pending == 0 and stuck == 0:
+                elif not reason:
+                    if auth_failure_401:
+                        # Ne pas repasser en vert : l'erreur 401 a deja ete emise.
+                        pass
+                    elif pending == 0 and stuck == 0:
                         self._emit("idle")
                     elif pending > 0:
                         self._emit("idle", f"{pending} en attente")

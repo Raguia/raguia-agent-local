@@ -15,6 +15,26 @@ import httpx
 log = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+def http_response_detail(response: httpx.Response) -> str:
+    """Extrait le message FastAPI ``detail`` (ou un extrait du corps) pour les logs."""
+    try:
+        data = response.json()
+        d = data.get("detail")
+        if isinstance(d, str):
+            return d
+        if isinstance(d, list) and d:
+            parts: list[str] = []
+            for item in d[:5]:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("msg", item)))
+                else:
+                    parts.append(str(item))
+            return "; ".join(parts)
+    except Exception:
+        pass
+    return (response.text or "").strip().replace("\n", " ")[:400]
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 2.0  # secondes (x2 a chaque tentative)
 
@@ -217,10 +237,13 @@ class PortalApiClient:
                     ("files", (p.name, fh, "application/octet-stream")),
                 )
             # Upload sans retry (fichiers ouverts, non re-openable dans ExitStack)
+            # Reprendre explicitement Authorization : en multipart, certains chemins httpx
+            # mélangent mal les en-têtes par défaut du client.
             r = self._client.post(
                 f"{self.api_base}/api/portal/agent/upload",
                 data=data,
                 files=file_tuples,
+                headers=dict(self._headers),
                 timeout=600.0,
             )
         r.raise_for_status()

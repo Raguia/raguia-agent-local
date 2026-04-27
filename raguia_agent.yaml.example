@@ -2,6 +2,9 @@
 #
 # Jeton agent : voir README.md « Obtenir le jeton agent (JWT) »
 # (POST /api/portal/login puis POST /api/portal/agent/issue-token avec le Bearer portail).
+# En dev : le JWT agent doit etre emis par le *meme* backend (meme SECRET_KEY) qu'api_base.
+#  - API directe : http://127.0.0.1:8000
+#  - Via Vite     : http://localhost:5173  (proxy /api -> 8000) — ne pas reutiliser un jeton de la prod.
 
 api_base: "http://127.0.0.1:8000"
 client_slug: "mon-client"

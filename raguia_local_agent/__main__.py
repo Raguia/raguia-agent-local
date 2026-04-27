@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from .api_client import PortalApiClient
+from .api_client import PortalApiClient, http_response_detail
 from .config import APP_DATA_DIR, AgentConfig, is_first_launch, load_config
 from .logging_utils import setup_logging
 from .sync_agent import SyncAgent
@@ -66,10 +66,16 @@ def test_connection(cfg: AgentConfig) -> bool:
             print(f"  - Derniere erreur : {st['last_error']}")
         return True
     except httpx.HTTPStatusError as e:
+        detail = http_response_detail(e.response)
         if e.response.status_code == 401:
-            print("  ERREUR Token invalide ou expire")
+            print("  ERREUR 401 — jeton agent refuse par le portail :")
+            print(f"     {detail or e}")
+            print(
+                "  En local : emettre le jeton via le backend sur lequel pointe api_base "
+                "(ex. http://127.0.0.1:8000), pas un JWT copié depuis la production."
+            )
         else:
-            print(f"  ERREUR HTTP {e.response.status_code}")
+            print(f"  ERREUR HTTP {e.response.status_code} : {detail or e}")
         return False
     except Exception as e:
         print(f"  ERREUR {e}")
@@ -120,6 +126,18 @@ def main() -> None:
     if not lock_ok:
         print("Agent deja en cours d'execution (icone tray deja active).")
         sys.exit(0)
+
+    _cfg_p = cfg.cfg_path
+    if _cfg_p is not None:
+        try:
+            _cfg_p = _cfg_p.resolve()
+        except Exception:
+            pass
+    logging.info("Fichier config : %s | api_base : %s", _cfg_p, cfg.api_base)
+    if os.environ.get("RAGUIA_AGENT_TOKEN"):
+        logging.info(
+            "Jeton API : variable RAGUIA_AGENT_TOKEN (le YAML agent_token est ignore)."
+        )
 
     try:
         if args.test:
