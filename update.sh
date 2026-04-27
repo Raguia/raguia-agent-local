@@ -33,19 +33,27 @@ if ! git pull --ff-only "origin" "${BRANCH}" 2>/dev/null; then
 fi
 
 AGENT_DIR="${SCRIPT_DIR}/.raguia_agent"
-if [[ ! -d "${AGENT_DIR}/venv" ]]; then
-    echo "venv introuvable dans ${AGENT_DIR}/venv — lancez une fois ./install.sh"
+VENV_PY="${AGENT_DIR}/venv/bin/python"
+if [[ ! -x "${VENV_PY}" ]] && [[ -x "${AGENT_DIR}/venv/bin/python3" ]]; then
+    VENV_PY="${AGENT_DIR}/venv/bin/python3"
+fi
+if [[ ! -x "${VENV_PY}" ]]; then
+    echo "venv introuvable ou python manquant (${VENV_PY}) — lancez une fois ./install.sh"
     exit 1
 fi
 
 echo -e "${GREEN}Réinstallation du paquet editable (venv .raguia_agent)…${NC}"
-# shellcheck source=/dev/null
-source "${AGENT_DIR}/venv/bin/activate"
+# Venv créé par uv sans pip : préférer ``uv pip --python …`` puis ensurepip + pip.
 
 if command -v uv >/dev/null 2>&1; then
-    uv pip install -e ".[tray]"
+    if ! uv pip install -e ".[tray]" --python "${VENV_PY}"; then
+        echo "uv pip a échoué — tentative ensurepip + pip dans le venv…"
+        "${VENV_PY}" -m ensurepip --upgrade
+        "${VENV_PY}" -m pip install -e ".[tray]"
+    fi
 else
-    python3 -m pip install -e ".[tray]"
+    "${VENV_PY}" -m ensurepip --upgrade
+    "${VENV_PY}" -m pip install -e ".[tray]"
 fi
 
 echo ""

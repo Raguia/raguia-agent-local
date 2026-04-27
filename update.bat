@@ -28,13 +28,19 @@ if not exist "!AGENT_DIR!\venv\Scripts\python.exe" (
   exit /b 1
 )
 
-call "!AGENT_DIR!\venv\Scripts\activate.bat"
+set "VENV_PY=!AGENT_DIR!\venv\Scripts\python.exe"
 
 where uv >nul 2>&1
 if not errorlevel 1 (
-  uv pip install -e ".[tray]"
+  uv pip install -e ".[tray]" --python "!VENV_PY!"
+  if errorlevel 1 (
+    echo uv pip a echoue — ensurepip + pip dans le venv...
+    "!VENV_PY!" -m ensurepip --upgrade
+    "!VENV_PY!" -m pip install -e ".[tray]"
+  )
 ) else (
-  python -m pip install -e ".[tray]"
+  "!VENV_PY!" -m ensurepip --upgrade
+  "!VENV_PY!" -m pip install -e ".[tray]"
 )
 
 echo.
