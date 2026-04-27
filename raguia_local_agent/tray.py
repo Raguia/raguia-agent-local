@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from .sync_agent import SyncAgent
 
 from . import tray_dialogs
-from . import __version__ as AGENT_VERSION
 from .doctor import run_doctor
 from .logging_utils import export_support_bundle
 from .secret_store import save_token
@@ -367,64 +366,35 @@ class RaguiaTray:
                 )
 
         def run_update_ui(icon, item):
-            """Verifie la version sur le serveur et propose d'installer le script de MAJ."""
+            """git pull + pip install dans le clone (identique a update.sh / pas de telechargement distant)."""
 
             def work() -> None:
-                up = self._agent.updater
+                from . import __version__
+                from .local_git_update import run_local_git_update
+
+                info_parts: list[str] = []
                 try:
-                    data = up.client.agent_version_info()
+                    data = self._agent.updater.client.agent_version_info()
+                    srv = data.get("version")
+                    if srv:
+                        info_parts.append(f"Version annoncée par le serveur : {srv}")
                 except Exception as e:
-                    tray_dialogs.show_message(
-                        "Mise a jour",
-                        f"Impossible de joindre le serveur :\n{e!s}"[:800],
-                        kind="error",
+                    info_parts.append(
+                        "Serveur (info seulement) : indisponible — "
+                        f"{e!s}"[:180]
                     )
+                info_parts.append(f"Version du paquet actuel : {__version__.strip()}")
+                info_block = "\n".join(info_parts)
+
+                if not tray_dialogs.confirm_git_pull_update(
+                    __version__.strip(), info_block
+                ):
                     return
 
-                latest_raw = data.get("version")
-                latest = str(latest_raw).strip() if latest_raw else ""
-                if not latest:
-                    tray_dialogs.show_message(
-                        "Mise a jour",
-                        "Le serveur ne publie pas encore de numero de version pour l'agent "
-                        "(variable d'environnement LOCAL_AGENT_VERSION cote administrateur).",
-                        kind="warning",
-                    )
-                    return
-
-                cur = AGENT_VERSION.strip()
-                if latest == cur:
-                    tray_dialogs.show_message(
-                        "Mise a jour",
-                        f"Version installee : {cur}\n"
-                        f"Version serveur : {latest}\n\n"
-                        "Vous etes a jour.",
-                        kind="info",
-                    )
-                    return
-
-                dl = (data.get("download_url") or "").strip()
-                sha = (data.get("sha256") or "").strip()
-                if not dl or not sha:
-                    tray_dialogs.show_message(
-                        "Mise a jour incomplete",
-                        f"La version {latest} est annoncee mais le serveur n'expose pas "
-                        "encore l'URL HTTPS et le SHA256 du paquet "
-                        "(LOCAL_AGENT_DOWNLOAD_URL, LOCAL_AGENT_SHA256).\n\n"
-                        "Contactez votre administrateur.",
-                        kind="warning",
-                    )
-                    return
-
-                if not tray_dialogs.confirm_agent_update(cur, latest):
-                    return
-
-                ok = up.perform_update(data)
+                ok, msg = run_local_git_update()
                 tray_dialogs.show_message(
-                    "Mise a jour",
-                    "Installation terminee. Quittez puis redemarrez l'agent."
-                    if ok
-                    else "L'installation a echoue — consultez les logs.",
+                    "Mise à jour",
+                    msg,
                     kind="info" if ok else "error",
                 )
 

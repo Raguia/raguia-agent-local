@@ -102,6 +102,45 @@ def show_message(title: str, message: str, *, kind: str = "info") -> None:
         log.exception("show_message: %s", e)
 
 
+def confirm_git_pull_update(
+    local_version: str,
+    info_block: str = "",
+) -> bool:
+    """MAJ réelle git pull + pip — menu icône."""
+    info = info_block.strip()
+    prefix = (info + "\n\n") if info else ""
+    body = (
+        f"{prefix}"
+        "Cette opération va exécuter dans le dossier du clone Git :\n"
+        "  • git pull\n"
+        "  • pip install -e \".[tray]\" (venv .raguia_agent)\n\n"
+        f"Version du paquet actuel : {local_version}\n\n"
+        "Continuer ?"
+    )
+    script = (
+        "import tkinter as tk\n"
+        "from tkinter import messagebox\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "try:\n"
+        "    root.lift()\n"
+        "    root.attributes('-topmost', True)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "try:\n"
+        f"    ok = messagebox.askyesno({repr('Raguia — Mise à jour depuis Git')}, {repr(body)}, parent=root, icon='question')\n"
+        "finally:\n"
+        "    root.destroy()\n"
+        "print('1' if ok else '0')\n"
+    )
+    try:
+        r = _run_tk_subprocess(script)
+        return (r.stdout or "").strip() == "1"
+    except Exception as e:
+        log.exception("confirm_git_pull_update: %s", e)
+        return False
+
+
 def confirm_agent_update(current_version: str, new_version: str) -> bool:
     """Telechargement et execution du script serveur — demande confirmation."""
     body = (

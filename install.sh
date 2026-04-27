@@ -223,6 +223,7 @@ else
 fi
 
 echo -e "\n${GREEN}5. Scripts de contrôle...${NC}"
+chmod +x "$SCRIPT_DIR/update.sh" 2>/dev/null || true
 chmod +x "$AGENT_DIR/start.sh" "$AGENT_DIR/test.sh" "$AGENT_DIR/stop.sh" 2>/dev/null || true
 
 echo -e "\n${GREEN}6. Démarrage automatique (selon l'OS)...${NC}"
@@ -240,3 +241,4 @@ if [[ -n "$PORTAL_HINT" ]]; then
 fi
 echo "Dossier synchronisé : $WATCH_PARENT/RAGUIA"
 echo "Contrôle : ${AGENT_DIR}/test.sh | start.sh | stop.sh"
+echo "MAJ depuis Git (racine du clone) : ${SCRIPT_DIR}/update.sh"

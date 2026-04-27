@@ -1,5 +1,7 @@
 #!/bin/bash
 cd "$(dirname "$0")"
+# Racine du clone git (parent de .raguia_agent) — utilisé par builtin_update.py / MAJ depuis le menu
+export RAGUIA_AGENT_REPO="$(cd .. && pwd)"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Erreur: python3 est introuvable. Installe Python 3 puis relance."

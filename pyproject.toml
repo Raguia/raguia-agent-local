@@ -24,6 +24,7 @@ full = [
 
 [project.scripts]
 raguia-local-agent = "raguia_local_agent.__main__:main"
+raguia-local-update = "raguia_local_agent.local_git_update:main"
 
 [build-system]
 requires = ["hatchling"]

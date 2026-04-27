@@ -81,6 +81,20 @@ Les scripts ne sont **pas** à la racine du clone : tout est sous `**.raguia_ag
 
 Depuis la racine du clone : `./.raguia_agent/test.sh` ou `.\.raguia_agent\test.bat`.
 
+### Mise à jour complète du dépôt (équivalent à « refaire » git clone + dépendances)
+
+Sans refaire `install.sh` pour la config ni le jeton :
+
+1. À la **racine du clone** (là où se trouvent `install.sh` et `pyproject.toml`) :
+   - macOS / Linux : `./update.sh`
+   - Windows : `update.bat`
+2. Le script fait **`git pull`** (branche par défaut `main`, surcharge possible avec `RAGUIA_AGENT_BRANCH`) puis **`pip install -e ".[tray]"`** dans le venv `.raguia_agent/venv`.
+3. Redémarrer l’agent : icône → Quitter puis relancer `start.sh` / `start.bat`.
+
+Il faut que le dossier soit toujours un **clone git** (présence de `.git`). Sinon, refaire `git clone …` puis `install.sh`.
+
+**Menu icône « Vérifier / installer mise à jour »** : exécute **directement** `git pull` puis `pip install -e ".[tray]"` dans le clone (comme `update.sh`), sans téléchargement distant. La variable **`RAGUIA_AGENT_REPO`** est définie par `start.sh` / `start.bat`. En ligne de commande équivalent : `raguia-local-update` ou `python -m raguia_local_agent.local_git_update`.
+
 - **start** : surveillance du dossier RAGUIA (icône tray si installé).
 - **test** : vérifie le portail / le jeton sans laisser l’agent tourner en continu.
 - **stop** : arrête l’agent.
