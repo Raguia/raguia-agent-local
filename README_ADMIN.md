@@ -87,6 +87,8 @@ Depuis la racine du clone : `./.raguia_agent/test.sh` ou `.\.raguia_agent\test.
 - **test** : vérifie le portail / le jeton sans laisser l’agent tourner en continu.
 - **stop** : arrête l’agent.
 - **Mise à jour JWT via interface** : dans le menu tray, utilisez **« Mettre a jour le jeton JWT… »**. Le jeton est testé immédiatement puis sauvegardé dans la config.
+- **Doctor (diagnostic client)** : dans le menu tray, utilisez **« Lancer un diagnostic (Doctor)… »** pour un état lisible (URL, connexion, queue, auto-start, stockage token), sans afficher de secrets.
+- **Export support** : dans le menu tray, utilisez **« Exporter un bundle support… »** pour générer un ZIP (`~/.raguia/support_bundle_*.zip`) contenant les logs et le dernier diagnostic.
 - **Désinstallation via interface** : dans le menu tray, utilisez **« Desinstaller l'agent… »** puis confirmez. La désinstallation :
   - arrête l’agent,
   - supprime le démarrage automatique (Windows/macOS/Linux),
@@ -113,5 +115,37 @@ Installation manuelle du démarrage (sans passer par l’installateur) : possib
 
 - **Erreurs 401/403** : Vérifier le jeton et l’URL du portail dans `.raguia_agent/raguia_agent.yaml`. Testez avec `cd .raguia_agent && ./test.sh` (ou `.\test.bat` sous Windows).
 - **Fichiers ignorés** : L'agent ignore volontairement les fichiers temporaires (`~$*.docx`, `.tmp`).
-- **Logs** : Situés par défaut dans un fichier `.raguia_agent/raguia_agent.log` ou le dossier `.raguia/` de l'utilisateur.
+- **Logs** : Situés dans `~/.raguia/agent.log` avec rotation automatique (`agent.log.1` ... `agent.log.5`).
+
+## 5. Sécurité et modes de config
+
+- **Stockage du jeton** : par défaut, l'agent tente de stocker le token dans le trousseau OS (Keychain/Credential Manager/libsecret) avec fallback compatibilité.
+- **Mode strict recommandé** : ajoutez `secure_token_storage: true` dans la config pour refuser le token en clair **si** le keyring est disponible.
+- **Logging structuré** : `structured_logging: true` (par défaut) écrit des logs JSON adaptés au support.
+
+Exemple de paramètres :
+
+```yaml
+secure_token_storage: true
+structured_logging: true
+```
+
+## 6. Confiance de la chaîne de mise à jour
+
+La mise à jour est refusée si :
+- la somme `sha256` est absente,
+- l'URL de téléchargement n'est pas en HTTPS,
+- l'hôte de téléchargement diffère de l'hôte du portail.
+
+Cela réduit les risques de source de mise à jour non approuvée.
+
+### Paramètres backend requis pour exposer l'update
+
+Renseigner côté backend (variables d'environnement) :
+
+- `LOCAL_AGENT_VERSION` (ex: `0.2.3`)
+- `LOCAL_AGENT_DOWNLOAD_URL` (HTTPS, même hôte que le portail)
+- `LOCAL_AGENT_SHA256` (sha256 hex du script/fichier distribué)
+
+Sans `LOCAL_AGENT_VERSION`, l'endpoint `GET /api/portal/agent/version` renvoie `404`.
 

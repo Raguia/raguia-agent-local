@@ -67,6 +67,8 @@ Un simple coup d'œil à la couleur du petit cercle vous donne son état :
 Faites un clic droit sur l'icône pour faire apparaître un menu très utile :
 * **Ouvrir le dossier RAGUIA** : Raccourci rapide pour accéder à vos documents.
 * **Synchroniser maintenant** : Force l'envoi immédiat si vous êtes pressé.
+* **Lancer un diagnostic (Doctor)** : Vérifie automatiquement l'état de l'agent et affiche des messages simples (sans données sensibles).
+* **Exporter un bundle support** : Génère un fichier ZIP de diagnostic pour l'assistance.
 * **Voir l'état** : Indique combien de fichiers sont en attente d'envoi, et à quand remonte la dernière synchronisation.
 * **Réinitialiser les fichiers bloqués** : Si l'icône est orange à cause d'un fichier bloqué, ce bouton demande à l'agent de réessayer.
 
@@ -83,6 +85,12 @@ Pas de panique. L'agent Raguia est intelligent : si vous avez juste déplacé le
 
 **Mon icône est rouge !**
 Vérifiez d'abord votre connexion internet. Si internet fonctionne, c'est probablement que votre Jeton de sécurité a expiré. Retournez sur le portail web, générez un nouveau jeton, et remplacez-le. 
+
+**Le support me demande un diagnostic**
+Faites un clic droit sur l'icône puis :
+1. **Lancer un diagnostic (Doctor)** pour voir le statut global.
+2. **Exporter un bundle support** pour générer le ZIP à transmettre.
+Ce bundle ne contient pas votre jeton en clair.
 
 ---
 

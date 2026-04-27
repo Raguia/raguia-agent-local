@@ -321,6 +321,10 @@ class SyncAgent:
             obs.stop()
             obs.join(timeout=5)
             self.queue.close()
+            try:
+                self.client.close()
+            except Exception:
+                pass
             self._emit("stopped")
             log.info("Agent arrete.")
 

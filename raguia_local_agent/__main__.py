@@ -12,6 +12,7 @@ from typing import Optional
 
 from .api_client import PortalApiClient
 from .config import APP_DATA_DIR, AgentConfig, is_first_launch, load_config
+from .logging_utils import setup_logging
 from .sync_agent import SyncAgent
 
 
@@ -89,7 +90,11 @@ def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
             print(f"Wizard indisponible : {e}")
             print("Creez ~/.raguia/config.yaml manuellement.")
             sys.exit(1)
-    return load_config(cfg_path)
+    try:
+        return load_config(cfg_path)
+    except ValueError as e:
+        print(f"Configuration invalide: {e}")
+        sys.exit(1)
 
 
 def main() -> None:
@@ -102,13 +107,13 @@ def main() -> None:
                         help="Demarre sans icone systray (mode serveur)")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=os.environ.get("RAGUIA_LOG_LEVEL", "INFO"),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
     cfg_path = Path(args.config) if args.config else None
     cfg = _run_wizard_if_needed(cfg_path)
+    setup_logging(
+        cfg.app_data_dir,
+        level=os.environ.get("RAGUIA_LOG_LEVEL", "INFO"),
+        structured=bool(cfg.structured_logging),
+    )
 
     lock_path: Optional[Path] = None
     lock_ok, lock_path = _acquire_single_instance_lock()

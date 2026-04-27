@@ -1,0 +1,34 @@
+from pathlib import Path
+
+from raguia_local_agent import secret_store
+
+
+class _FakeKeyring:
+    def __init__(self):
+        self.store = {}
+
+    def set_password(self, service, username, password):
+        self.store[(service, username)] = password
+
+    def get_password(self, service, username):
+        return self.store.get((service, username))
+
+
+def test_save_and_load_token_with_keyring(monkeypatch, tmp_path: Path):
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_get_keyring_module", lambda: fake)
+    cfg = tmp_path / "config.yaml"
+
+    stored = secret_store.save_token(cfg, "jwt-123")
+    assert stored == secret_store.KEYRING_SENTINEL
+    assert secret_store.load_token(cfg, stored) == "jwt-123"
+
+
+def test_save_token_falls_back_without_keyring(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(secret_store, "_get_keyring_module", lambda: None)
+    cfg = tmp_path / "config.yaml"
+
+    stored = secret_store.save_token(cfg, "jwt-456")
+    assert stored == "jwt-456"
+    assert secret_store.load_token(cfg, stored) == "jwt-456"
+

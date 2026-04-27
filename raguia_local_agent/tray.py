@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from .sync_agent import SyncAgent
 
 from . import tray_dialogs
+from .doctor import run_doctor
+from .logging_utils import export_support_bundle
+from .secret_store import save_token
 
 _COLORS = {
     "idle":    "#22c55e",   # vert
@@ -35,6 +38,19 @@ _COLORS = {
     "error":   "#ef4444",   # rouge
     "stopped": "#6b7280",   # gris
 }
+
+
+def _safe_run(cmd: list[str]) -> None:
+    """Execute une commande sans faire echouer le flux UI."""
+    try:
+        subprocess.run(
+            cmd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 class TrayStatus(str, Enum):
@@ -141,10 +157,19 @@ class RaguiaTray:
             self._on_agent_status(TrayStatus.IDLE, f"{n} fichier(s) remis en file")
 
         def quit_agent(icon, item):
-            self._agent.stop()
+            try:
+                self._agent.stop()
+            except Exception:
+                pass
             if self._on_quit:
-                self._on_quit()
-            icon.stop()
+                try:
+                    self._on_quit()
+                except Exception:
+                    pass
+            try:
+                icon.stop()
+            except Exception:
+                pass
 
         def update_jwt(icon, item):
             try:
@@ -189,7 +214,7 @@ class RaguiaTray:
             if cfg_file.is_file():
                 with open(cfg_file, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
-            data["agent_token"] = new_token
+            data["agent_token"] = save_token(cfg_file, new_token)
             with open(cfg_file, "w", encoding="utf-8") as f:
                 yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
             try:
@@ -214,8 +239,11 @@ class RaguiaTray:
                 agent_dirs: list[Path] = []
                 if cfg_file.name == "raguia_agent.yaml":
                     agent_dirs.append(cfg_file.parent)
-                cwd = Path.cwd()
-                if (cwd / "raguia_agent.yaml").is_file():
+                try:
+                    cwd = Path.cwd()
+                except Exception:
+                    cwd = None
+                if cwd and (cwd / "raguia_agent.yaml").is_file():
                     agent_dirs.append(cwd)
                 app_data_dir = Path.home() / ".raguia"
 
@@ -229,32 +257,23 @@ class RaguiaTray:
                     elif sys.platform == "darwin":
                         plist = Path.home() / "Library" / "LaunchAgents" / "com.raguia.local.agent.plist"
                         uid = str(os.getuid()) if hasattr(os, "getuid") else ""
-                        if uid and plist.is_file():
-                            subprocess.run(
-                                ["launchctl", "bootout", f"gui/{uid}", str(plist)],
-                                check=False,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                        subprocess.run(
-                            ["launchctl", "remove", "com.raguia.local.agent"],
-                            check=False,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
+                        if uid:
+                            if plist.is_file():
+                                _safe_run(["launchctl", "bootout", f"gui/{uid}", str(plist)])
+                            # fallback possible selon versions macOS / etat de l'agent
+                            _safe_run(["launchctl", "bootout", f"gui/{uid}/com.raguia.local.agent"])
+                        _safe_run(["launchctl", "remove", "com.raguia.local.agent"])
                         if plist.is_file():
-                            subprocess.run(
-                                ["launchctl", "unload", str(plist)],
-                                check=False,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
+                            _safe_run(["launchctl", "unload", str(plist)])
                             plist.unlink(missing_ok=True)
                     else:
-                        unit = Path.home() / ".config" / "systemd" / "user" / "raguia-agent.service"
+                        user_cfg = Path(
+                            os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+                        )
+                        unit = user_cfg / "systemd" / "user" / "raguia-agent.service"
                         if shutil.which("systemctl"):
-                            subprocess.run(["systemctl", "--user", "disable", "--now", "raguia-agent.service"], check=False)
-                            subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+                            _safe_run(["systemctl", "--user", "disable", "--now", "raguia-agent.service"])
+                            _safe_run(["systemctl", "--user", "daemon-reload"])
                         if unit.exists():
                             unit.unlink()
                 except Exception:
@@ -295,6 +314,8 @@ class RaguiaTray:
                     }
                     if os.name == "nt":
                         kwargs["creationflags"] = 0x08000000
+                    else:
+                        kwargs["start_new_session"] = True
                     subprocess.Popen(
                         [sys.executable, "-c", cleanup_script, json.dumps([str(p) for p in norm])],
                         **kwargs,
@@ -310,6 +331,37 @@ class RaguiaTray:
                 tray_dialogs.show_message(
                     "Erreur desinstallation",
                     f"La desinstallation a echoue:\n{e}",
+                    kind="error",
+                )
+
+        def run_doctor_ui(icon, item):
+            try:
+                ok, report = run_doctor(self._agent.cfg, self._agent)
+                title = "Diagnostic OK" if ok else "Diagnostic - attention"
+                kind = "info" if ok else "warning"
+                tray_dialogs.show_message(title, report, kind=kind)
+            except Exception:
+                tray_dialogs.show_message(
+                    "Diagnostic indisponible",
+                    "Le diagnostic n'a pas pu etre execute.",
+                    kind="error",
+                )
+
+        def export_support(icon, item):
+            try:
+                _, report = run_doctor(self._agent.cfg, self._agent)
+                ts = int(time.time())
+                out = self._agent.cfg.app_data_dir / f"support_bundle_{ts}.zip"
+                export_support_bundle(self._agent.cfg.app_data_dir, out, report)
+                tray_dialogs.show_message(
+                    "Export support cree",
+                    f"Fichier genere: {out}",
+                    kind="info",
+                )
+            except Exception:
+                tray_dialogs.show_message(
+                    "Export support impossible",
+                    "La creation du bundle support a echoue.",
                     kind="error",
                 )
 
@@ -332,6 +384,8 @@ class RaguiaTray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Ouvrir le dossier RAGUIA", open_folder),
             pystray.MenuItem("Synchroniser maintenant", sync_now),
+            pystray.MenuItem("Lancer un diagnostic (Doctor)…", run_doctor_ui),
+            pystray.MenuItem("Exporter un bundle support…", export_support),
             pystray.MenuItem("Mettre a jour le jeton JWT…", update_jwt),
             pystray.MenuItem("Desinstaller l'agent…", uninstall_agent),
             pystray.Menu.SEPARATOR,

@@ -19,13 +19,36 @@ _MAX_RETRIES = 3
 _RETRY_BACKOFF = 2.0  # secondes (x2 a chaque tentative)
 
 
-def _request_with_retry(method: str, url: str, *, retries: int = _MAX_RETRIES, **kwargs) -> httpx.Response:
+def validate_api_base(api_base: str) -> str:
+    """Valide et normalise l'URL du portail.
+
+    - HTTPS requis, sauf localhost (dev local)
+    - interdit les URL de page (/portal/...) au lieu de la racine
+    """
+    base = (api_base or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("URL du portail manquante.")
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("URL invalide: utilisez http:// ou https://.")
+    host = parsed.hostname or ""
+    local_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    if parsed.scheme == "http" and host not in local_hosts:
+        raise ValueError("L'URL du portail doit utiliser https:// (sauf localhost).")
+    if "/portal/" in (parsed.path or ""):
+        raise ValueError("Utilisez la racine du portail (ex: https://mon-domaine.tld), pas une page /portal/...")
+    return base
+
+
+def _request_with_retry(
+    client: httpx.Client, method: str, url: str, *, retries: int = _MAX_RETRIES, **kwargs
+) -> httpx.Response:
     """Effectue une requete HTTP avec retry exponentiel sur erreurs transitoires."""
     last_exc: Exception | None = None
     delay = _RETRY_BACKOFF
     for attempt in range(retries + 1):
         try:
-            r = httpx.request(method, url, **kwargs)
+            r = client.request(method, url, **kwargs)
             if r.status_code in _RETRYABLE_STATUS and attempt < retries:
                 log.warning("HTTP %s depuis %s (tentative %d/%d), retry dans %.1fs...",
                             r.status_code, url, attempt + 1, retries, delay)
@@ -47,18 +70,15 @@ def _request_with_retry(method: str, url: str, *, retries: int = _MAX_RETRIES, *
 
 class PortalApiClient:
     def __init__(self, api_base: str, agent_token: str):
-        self.api_base = api_base.rstrip("/")
+        self.api_base = validate_api_base(api_base)
         self.agent_token = agent_token
         self._headers = {"Authorization": f"Bearer {agent_token}"}
-        
-        # Securite : Bloquer HTTP si ce n'est pas localhost (evite MitM / vol de JWT)
-        if self.api_base.startswith("http://"):
-            import urllib.parse
-            hostname = urllib.parse.urlparse(self.api_base).hostname
-            if hostname not in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-                log.error("SECURITE CRITIQUE : api_base (%s) utilise HTTP au lieu de HTTPS !", self.api_base)
-                log.error("Le jeton agent serait envoye en clair sur le reseau.")
-                raise ValueError("L'URL du portail DOIT utiliser 'https://' pour des raisons de securite.")
+        # Securite: ignorer les proxies d'environnement (HTTP(S)_PROXY)
+        self._client = httpx.Client(
+            trust_env=False,
+            follow_redirects=False,
+            headers=self._headers,
+        )
 
     def _parse_json_or_raise(self, r: httpx.Response, endpoint: str) -> dict[str, Any]:
         try:
@@ -86,12 +106,14 @@ class PortalApiClient:
             raise ValueError("Jeton vide")
         self.agent_token = token
         self._headers = {"Authorization": f"Bearer {token}"}
+        self._client.headers.clear()
+        self._client.headers.update(self._headers)
 
     def sync_status(self) -> dict[str, Any]:
         r = _request_with_retry(
+            self._client,
             "GET",
             f"{self.api_base}/api/portal/agent/sync-status",
-            headers=self._headers,
             timeout=60.0,
         )
         r.raise_for_status()
@@ -100,9 +122,9 @@ class PortalApiClient:
     def refresh_token(self) -> dict[str, Any]:
         """Demande un nouveau token au portail."""
         r = _request_with_retry(
+            self._client,
             "POST",
             f"{self.api_base}/api/portal/agent/refresh-token",
-            headers=self._headers,
             timeout=30.0,
         )
         r.raise_for_status()
@@ -111,9 +133,9 @@ class PortalApiClient:
     def delete_local(self, relative_path: str) -> dict[str, Any]:
         """Met en corbeille sur le portail le document lié à ce chemin relatif."""
         r = _request_with_retry(
+            self._client,
             "POST",
             f"{self.api_base}/api/portal/agent/delete-local",
-            headers={**self._headers, "Content-Type": "application/json"},
             json={"relative_path": relative_path},
             timeout=60.0,
         )
@@ -124,9 +146,9 @@ class PortalApiClient:
         self, metrics: Optional[dict[str, Any]] = None, error: Optional[str] = None
     ) -> None:
         r = _request_with_retry(
+            self._client,
             "POST",
             f"{self.api_base}/api/portal/agent/sync-complete",
-            headers={**self._headers, "Content-Type": "application/json"},
             json={"metrics": metrics or {}, "error": error},
             timeout=120.0,
         )
@@ -154,12 +176,14 @@ class PortalApiClient:
                     ("files", (p.name, fh, "application/octet-stream")),
                 )
             # Upload sans retry (fichiers ouverts, non re-openable dans ExitStack)
-            r = httpx.post(
+            r = self._client.post(
                 f"{self.api_base}/api/portal/agent/upload",
-                headers=self._headers,
                 data=data,
                 files=file_tuples,
                 timeout=600.0,
             )
         r.raise_for_status()
         return self._parse_json_or_raise(r, "upload")
+
+    def close(self) -> None:
+        self._client.close()

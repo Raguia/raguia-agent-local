@@ -10,6 +10,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import yaml
+from .api_client import validate_api_base
+from .secret_store import save_token
 
 
 def _detect_default_parent() -> str:
@@ -139,9 +141,15 @@ class SetupWizard:
             self._show_step(self._step - 1)
 
     def _next(self) -> None:
-        if self._step == 0 and not self.var_token.get().strip():
-            messagebox.showwarning("Jeton manquant", "Entrez votre jeton agent.")
-            return
+        if self._step == 0:
+            if not self.var_token.get().strip():
+                messagebox.showwarning("Jeton manquant", "Entrez votre jeton agent.")
+                return
+            try:
+                validate_api_base(self.var_api.get())
+            except ValueError as e:
+                messagebox.showwarning("URL invalide", str(e))
+                return
         if self._step < 2:
             self._show_step(self._step + 1)
 
@@ -160,10 +168,12 @@ class SetupWizard:
 
         def _do():
             try:
+                api_base = validate_api_base(self.var_api.get())
                 r = httpx.get(
-                    f"{self.var_api.get().rstrip('/')}/api/portal/agent/sync-status",
+                    f"{api_base}/api/portal/agent/sync-status",
                     headers={"Authorization": f"Bearer {self.var_token.get().strip()}"},
                     timeout=10.0,
+                    trust_env=False,
                 )
                 if r.status_code == 200:
                     return True, "Connexion reussie !"
@@ -186,9 +196,14 @@ class SetupWizard:
         config_dir = Path.home() / ".raguia"
         config_dir.mkdir(exist_ok=True)
         config_path = config_dir / "config.yaml"
+        try:
+            api_base = validate_api_base(self.var_api.get())
+        except ValueError as e:
+            messagebox.showwarning("URL invalide", str(e))
+            return
         data = {
-            "api_base":      self.var_api.get().rstrip("/"),
-            "agent_token":   token,
+            "api_base":      api_base,
+            "agent_token":   save_token(config_path, token),
             "watch_parent":  self.var_dir.get(),
         }
         with open(config_path, "w", encoding="utf-8") as f:

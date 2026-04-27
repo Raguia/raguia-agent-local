@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -33,6 +34,7 @@ class AgentUpdater:
                 f"{self.client.api_base}/api/portal/agent/version",
                 headers=self.client._headers,
                 timeout=15.0,
+                trust_env=False,
             )
             if r.status_code == 404:
                 return False  # endpoint non implemente, silencieux
@@ -57,18 +59,29 @@ class AgentUpdater:
             log.error("URL de mise a jour manquante dans update_info")
             return False
 
-        expected_sha256 = update_info.get("sha256")
+        expected_sha256 = (update_info.get("sha256") or "").strip()
         if not expected_sha256:
-            log.warning("SECURITE : Aucune somme de controle (SHA256) fournie pour la mise a jour.")
-            # On pourrait bloquer ici. Pour la retro-compatibilite on laisse passer si c'est du HTTPS,
-            # mais idealement il faut faire : return False
-            if self.client.api_base.startswith("http://"):
-                log.error("Mise a jour refusee : pas de SHA256 et connexion HTTP (risque de MitM).")
-                return False
+            log.error("Mise a jour refusee : checksum SHA256 manquante.")
+            return False
+
+        # Chain trust minimal: URL HTTPS et meme host que le portail
+        parsed_base = urlparse(self.client.api_base)
+        parsed_dl = urlparse(download_url)
+        if parsed_dl.scheme != "https":
+            log.error("Mise a jour refusee : URL de telechargement non HTTPS.")
+            return False
+        if (parsed_dl.hostname or "").lower() != (parsed_base.hostname or "").lower():
+            log.error("Mise a jour refusee : source non approuvee.")
+            return False
 
         log.info("Telechargement de la mise a jour %s...", update_info.get("version"))
         try:
-            r = httpx.get(download_url, timeout=300.0, follow_redirects=True)
+            r = httpx.get(
+                download_url,
+                timeout=300.0,
+                follow_redirects=False,
+                trust_env=False,
+            )
             r.raise_for_status()
 
             # Verifier le hash avant d'ecrire/executer

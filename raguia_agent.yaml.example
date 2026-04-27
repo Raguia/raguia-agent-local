@@ -21,3 +21,5 @@ burst_threshold: 20
 max_files_per_cycle: 100
 
 dry_run: false
+secure_token_storage: true
+structured_logging: true
