@@ -278,15 +278,17 @@ class SyncAgent:
                         self._check_token_expiry()
 
                 # --- Polling sync-status ---
+                st: dict = {}
+                sync_ok = True
                 try:
                     st = self.client.sync_status()
                 except Exception as e:
+                    sync_ok = False
                     log.warning("sync-status inaccessible : %s", e)
                     self._emit("warning", "Portail inaccessible")
-                    self._stop.wait(self.cfg.poll_interval_seconds)
-                    continue
 
-                self._apply_remote_deletions(st)
+                if sync_ok:
+                    self._apply_remote_deletions(st)
 
                 # --- Evaluer si on doit syncer ---
                 pending   = self.queue.pending_count()
@@ -298,9 +300,10 @@ class SyncAgent:
                 self._syncing.clear()
 
                 reason = None
-                if st.get("sync_requested"):
+                if sync_ok and st.get("sync_requested"):
                     reason = "server_request"
                 elif force:
+                    # Sync manuelle : doit tourner meme si sync-status vient d'echouer (sinon clic ignore).
                     reason = "force"
                 elif pending_delete > 0:
                     reason = "local_delete"
@@ -312,9 +315,12 @@ class SyncAgent:
                     log.warning("%d fichier(s) bloques (trop d'echecs). Clic droit -> Reinitialiser.", stuck)
                     self._emit("warning", f"{stuck} fichier(s) bloques")
 
+                # Sans sync-status : pas de quota serveur (on laisse run_cycle sans plafond distant)
+                limit_b = st.get("max_storage_bytes") if sync_ok else None
+
                 if reason:
                     last_cooldown_ts = time.time()
-                    m = self.run_cycle(reason, limit_bytes=st.get("max_storage_bytes"))
+                    m = self.run_cycle(reason, limit_bytes=limit_b)
                     err_str = ("; ".join(m["errors"])[:2000] if m.get("errors") else None)
                     errs = m.get("errors") or []
                     idle_cycle = (
@@ -341,6 +347,11 @@ class SyncAgent:
                         self._emit("idle")
                     elif pending > 0:
                         self._emit("idle", f"{pending} en attente")
+
+                # Si le portail est toujours injoignable et aucune synchro lancee, attendre avant le prochain poll
+                if not sync_ok and not reason:
+                    self._stop.wait(self.cfg.poll_interval_seconds)
+                    continue
 
                 self._stop.wait(self.cfg.poll_interval_seconds)
 
