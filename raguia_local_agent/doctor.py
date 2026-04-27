@@ -20,6 +20,57 @@ def _fail(label: str, detail: str = "") -> str:
     return f"[ERREUR] {label}" + (f" - {detail}" if detail else "")
 
 
+def _format_portal_check_error(exc: Exception) -> str:
+    """Message explicite pour l'essai sync-status (pas de fuite de secret)."""
+    try:
+        import httpx
+    except ImportError:
+        return f"{type(exc).__name__}: {exc!s}"[:300]
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        r = exc.response
+        code = r.status_code
+        detail_hint = ""
+        try:
+            payload = r.json()
+            if isinstance(payload, dict):
+                raw = payload.get("detail")
+                if raw is not None:
+                    if isinstance(raw, list) and raw:
+                        raw = raw[0].get("msg") if isinstance(raw[0], dict) else raw[0]
+                    detail_hint = str(raw).strip()[:220]
+        except Exception:
+            pass
+
+        by_code = {
+            401: "jeton invalide / expire / generation obsolete (regenerez depuis le portail)",
+            403: "agent local desactive pour ce client ou droits refuses",
+            404: "route ou client introuvable — verifiez api_base (racine backend, pas une page /portal)",
+        }
+        hint = by_code.get(code, "")
+        if detail_hint:
+            return f"HTTP {code}: {detail_hint}"
+        return f"HTTP {code}" + (f" — {hint}" if hint else "")
+
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+        ),
+    ):
+        return f"{type(exc).__name__}: {exc!s}"[:280]
+
+    if isinstance(exc, ValueError):
+        msg = str(exc).strip()
+        return msg[:300] if msg else repr(exc)[:300]
+
+    return f"{type(exc).__name__}: {exc!s}"[:300]
+
+
 def run_doctor(cfg, agent) -> tuple[bool, str]:
     lines: list[str] = []
     has_error = False
@@ -61,13 +112,13 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
         lines.append(_ok("Aucun fichier bloque"))
     lines.append(_ok("File locale", f"{pending} en attente"))
 
-    # API status test (message sans info sensible)
+    # API status test — detail reel (HTTP / reseau / detail FastAPI)
     try:
         agent.client.sync_status()
         lines.append(_ok("Connexion portail"))
-    except Exception:
+    except Exception as e:
         has_error = True
-        lines.append(_fail("Connexion portail", "Impossible de joindre le service ou token invalide"))
+        lines.append(_fail("Connexion portail", _format_portal_check_error(e)))
 
     # Autostart check
     try:

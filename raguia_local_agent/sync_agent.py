@@ -97,11 +97,24 @@ class SyncAgent:
     # ------------------------------------------------------------------
     def run_cycle(self, reason: str, limit_bytes: Optional[int] = None) -> dict:
         metrics: dict = {"reason": reason, "uploaded": 0, "deleted": 0, "errors": []}
+        # Demande explicite (portail ou menu) : ne pas attendre stability_seconds sinon le 1er
+        # poll envoyait sync-complete « vide » et effaçait la demande sans upload (bug).
+        min_age = (
+            0.0
+            if reason in ("force", "server_request")
+            else self.cfg.stability_seconds
+        )
         batch = self.queue.pop_batch(
             self.cfg.max_files_per_cycle,
-            min_age_seconds=self.cfg.stability_seconds,
+            min_age_seconds=min_age,
         )
         if not batch:
+            if reason in ("force", "server_request"):
+                log.warning(
+                    "Sync (%s) : file d'attente vide ou aucun fichier eligible "
+                    "(extensions prevues, fichier vide, chemins ignores).",
+                    reason,
+                )
             return metrics
 
         delete_items = [
@@ -281,8 +294,8 @@ class SyncAgent:
                 pending_delete = self.queue.pending_delete_count()
                 stuck     = self.queue.stuck_count()
                 cooldown_ok = (time.time() - last_cooldown_ts) >= self.cfg.sync_cooldown_seconds
-                burst     = pending >= self.cfg.burst_threshold
-                force     = self._syncing.is_set()
+                burst = pending >= self.cfg.burst_threshold
+                force = self._syncing.is_set()
                 self._syncing.clear()
 
                 reason = None
@@ -293,6 +306,7 @@ class SyncAgent:
                 elif pending_delete > 0:
                     reason = "local_delete"
                 elif cooldown_ok and burst:
+                    # Synchro auto seulement apres cooldown ET rafale (limite cout vectorisation)
                     reason = "local_burst"
 
                 if stuck > 0:
@@ -303,11 +317,25 @@ class SyncAgent:
                     last_cooldown_ts = time.time()
                     m = self.run_cycle(reason, limit_bytes=st.get("max_storage_bytes"))
                     err_str = ("; ".join(m["errors"])[:2000] if m.get("errors") else None)
-                    try:
-                        self.client.sync_complete(metrics=m, error=err_str)
-                    except Exception as e:
-                        log.warning("sync-complete : %s", e)
-                    if not m["errors"]:
+                    errs = m.get("errors") or []
+                    idle_cycle = (
+                        (m.get("uploaded") or 0) == 0
+                        and (m.get("deleted") or 0) == 0
+                        and len(errs) == 0
+                    )
+                    # Ne pas appeler sync-complete si rien n'a été traité : sinon le portail
+                    # croyait la synchro terminée et effaçait la demande sans upload.
+                    if idle_cycle and reason in ("server_request", "force"):
+                        log.info(
+                            "Cycle '%s' sans envoi — sync-complete omis (nouvel essai au prochain poll).",
+                            reason,
+                        )
+                    else:
+                        try:
+                            self.client.sync_complete(metrics=m, error=err_str)
+                        except Exception as e:
+                            log.warning("sync-complete : %s", e)
+                    if not errs:
                         self._emit("idle")
                 else:
                     if pending == 0 and stuck == 0:

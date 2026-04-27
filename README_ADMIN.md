@@ -146,4 +146,4 @@ Renseigner côté backend (variables d'environnement) :
 - `LOCAL_AGENT_DOWNLOAD_URL` (HTTPS, même hôte que le portail)
 - `LOCAL_AGENT_SHA256` (sha256 hex du script/fichier distribué)
 
-Sans `LOCAL_AGENT_VERSION`, l'endpoint `GET /api/portal/agent/version` renvoie `404`.
+Sans `LOCAL_AGENT_VERSION`, l’endpoint renvoie `200` avec `"version": null` et `"configured": false` (pas de mise à jour annoncée).
