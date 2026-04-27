@@ -1,21 +1,73 @@
 #!/bin/bash
 # Installation simplifiée de l'agent RAGUIA (macOS / Linux ; détection auto de l'OS)
+#
+# Modes d'invocation :
+#   1) Nouveau (recommandé) — seul le slug client change entre dev et prod :
+#        ./install.sh prod  <client-slug>  [TOKEN]  [WATCH_PARENT]
+#        ./install.sh local <client-slug>  [TOKEN]  [WATCH_PARENT]
+#      Sans argument : pose les questions (mode, slug, jeton, dossier).
+#
+#   2) Ancien (compatibilité) — URL API complète en premier argument :
+#        ./install.sh https://...  [TOKEN]  [WATCH_PARENT]  [prod|local]
+#
+# Environnement (optionnel) :
+#   RAGUIA_INSTALL_ENV=prod|local     — défaut pour les invites interactives
+#   RAGUIA_PORTAL_ORIGIN_PROD=...    — origine prod (api_base prod)
+#   RAGUIA_LOCAL_API_BASE=...        — origine dev (défaut http://localhost:5173, proxy Vite → :8000)
+#                                      Mettre http://127.0.0.1:8000 pour parler au backend seul.
 
 set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 echo -e "${YELLOW}=== Installation Agent RAGUIA ===${NC}"
 
-API_BASE="${1:-}"
-TOKEN="${2:-}"
-WATCH_PARENT="${3:-}"
-RUNTIME_ENV="${4:-prod}"
-DEFAULT_API_PROD="https://raguia.valentin-fiess.fr"
-DEFAULT_API_LOCAL="http://localhost:5173"
+DEFAULT_API_PROD="${RAGUIA_PORTAL_ORIGIN_PROD:-https://raguia.valentin-fiess.fr}"
+DEFAULT_API_LOCAL="${RAGUIA_LOCAL_API_BASE:-http://localhost:5173}"
+
+LEGACY_MODE=0
+if [[ -n "${1:-}" && "$1" =~ ^https?:// ]]; then
+    LEGACY_MODE=1
+fi
+
+API_BASE=""
+TOKEN=""
+WATCH_PARENT=""
+RUNTIME_ENV=""
+CLIENT_SLUG=""
+
+if [[ "$LEGACY_MODE" -eq 1 ]]; then
+    API_BASE="${1:-}"
+    TOKEN="${2:-}"
+    WATCH_PARENT="${3:-}"
+    RUNTIME_ENV="${4:-prod}"
+    if [[ "$RUNTIME_ENV" != "local" && "$RUNTIME_ENV" != "prod" ]]; then
+        RUNTIME_ENV="prod"
+    fi
+elif [[ -n "${1:-}" && ( "$1" == "prod" || "$1" == "local" ) ]]; then
+    RUNTIME_ENV="$1"
+    CLIENT_SLUG="${2:-}"
+    TOKEN="${3:-}"
+    WATCH_PARENT="${4:-}"
+elif [[ -n "${1:-}" ]]; then
+    echo -e "${RED}Premier argument invalide.${NC}"
+    echo "  Nouveau : $0 prod|local <slug-client> [TOKEN] [WATCH_PARENT]"
+    echo "  Ancien  : $0 https://origin-api [TOKEN] [WATCH_PARENT] [prod|local]"
+    exit 1
+else
+    # Interactif (nouveau flux)
+    DEF_MODE="${RAGUIA_INSTALL_ENV:-prod}"
+    read -r -p "Mode [prod / local] (defaut: $DEF_MODE): " _mode
+    RUNTIME_ENV="${_mode:-$DEF_MODE}"
+    if [[ "$RUNTIME_ENV" != "local" ]]; then
+        RUNTIME_ENV="prod"
+    fi
+    read -r -p "Slug portail / identifiant client (ex: client-acme): " CLIENT_SLUG
+fi
 
 if [[ "$RUNTIME_ENV" == "local" ]]; then
     DEFAULT_API_BASE="$DEFAULT_API_LOCAL"
@@ -24,8 +76,19 @@ else
     DEFAULT_API_BASE="$DEFAULT_API_PROD"
 fi
 
+if [[ "$LEGACY_MODE" -eq 0 ]]; then
+    if [[ -z "${CLIENT_SLUG// /}" ]]; then
+        read -r -p "Slug portail / identifiant client (ex: client-acme): " CLIENT_SLUG
+    fi
+    if [[ -z "${CLIENT_SLUG// /}" ]]; then
+        echo -e "${RED}Le slug client est obligatoire (portion /portal/<slug>).${NC}"
+        exit 1
+    fi
+    API_BASE="$DEFAULT_API_BASE"
+fi
+
 if [[ -z "$API_BASE" ]]; then
-    read -r -p "URL du portail (defaut: $DEFAULT_API_BASE): " API_BASE
+    read -r -p "URL API — api_base (defaut: $DEFAULT_API_BASE): " API_BASE
     API_BASE="${API_BASE:-$DEFAULT_API_BASE}"
 fi
 if [[ -z "$TOKEN" ]]; then
@@ -33,8 +96,7 @@ if [[ -z "$TOKEN" ]]; then
     echo ""
 fi
 if [[ -z "$API_BASE" || -z "$TOKEN" ]]; then
-    echo -e "${RED}API_BASE et AGENT_TOKEN sont obligatoires.${NC}"
-    echo "Usage: $0 [API_BASE] [AGENT_TOKEN] [WATCH_PARENT] [prod|local]"
+    echo -e "${RED}api_base et jeton sont obligatoires.${NC}"
     exit 1
 fi
 
@@ -47,6 +109,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_DIR="$SCRIPT_DIR/.raguia_agent"
 PLIST_LABEL="com.raguia.local.agent"
 SYSTEMD_USER_UNIT="raguia-agent.service"
+
+PORTAL_HINT=""
+if [[ -n "$CLIENT_SLUG" ]]; then
+    PORTAL_HINT="$API_BASE/portal/$CLIENT_SLUG"
+fi
 
 install_autostart_macos() {
     local plist="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
@@ -122,13 +189,17 @@ uv python install 3.11
 
 echo -e "\n${GREEN}2. Création de la configuration...${NC}"
 mkdir -p "$AGENT_DIR"
-cat > "$AGENT_DIR/raguia_agent.yaml" << EOF
-api_base: "$API_BASE"
-agent_token: "$TOKEN"
-watch_parent: "$WATCH_PARENT"
-root_folder_name: "RAGUIA"
-runtime_env: "$RUNTIME_ENV"
-EOF
+
+{
+    echo "api_base: \"$API_BASE\""
+    if [[ -n "$CLIENT_SLUG" ]]; then
+        echo "client_slug: \"$CLIENT_SLUG\""
+    fi
+    echo "agent_token: \"$TOKEN\""
+    echo "watch_parent: \"$WATCH_PARENT\""
+    echo "root_folder_name: \"RAGUIA\""
+    echo "runtime_env: \"$RUNTIME_ENV\""
+} > "$AGENT_DIR/raguia_agent.yaml"
 
 echo -e "\n${GREEN}3. Installation des dépendances...${NC}"
 cd "$SCRIPT_DIR"
@@ -163,5 +234,9 @@ esac
 
 mkdir -p "$WATCH_PARENT/RAGUIA"
 echo -e "\n${GREEN}=== Installation terminée! ===${NC}"
-echo "Dossier cible: $WATCH_PARENT/RAGUIA"
+echo -e "api_base (API agent) : ${CYAN}$API_BASE${NC}"
+if [[ -n "$PORTAL_HINT" ]]; then
+    echo -e "Portail (navigateur) : ${CYAN}$PORTAL_HINT${NC}"
+fi
+echo "Dossier synchronisé : $WATCH_PARENT/RAGUIA"
 echo "Contrôle : ${AGENT_DIR}/test.sh | start.sh | stop.sh"

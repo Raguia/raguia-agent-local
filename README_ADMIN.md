@@ -21,38 +21,36 @@ cd raguia-agent-local
 
 #### macOS / Linux
 
-Ouvrez le terminal dans le dossier téléchargé et exécutez la commande avec vos identifiants :
+**Mode recommandé** — même URL de portail qu’à la main (`…/portal/<slug>`), seuls le slug et le mode diffèrent entre dev et prod :
 
 ```bash
-./install.sh "https://raguia.client-domaine.com" "VOTRE_JETON_SAAS" "/chemin/vers/dossier/cible"
+./install.sh prod mon-client-slug "VOTRE_JETON_AGENT"
+./install.sh local mon-client-slug "VOTRE_JETON_AGENT"
 ```
 
-Vous pouvez aussi lancer simplement `./install.sh` : le script vous pose les questions en CLI (URL, jeton JWT, dossier parent).
-Par défaut, l’URL proposée est `https://raguia.valentin-fiess.fr` (prod).  
-Pour forcer un setup local, passez `local` en 4e argument :
+Sans argument, le script demande **prod ou local**, le **slug client** (la partie après `/portal/`), puis le jeton et le dossier parent.  
+`prod` utilise `api_base=https://raguia.valentin-fiess.fr` ; `local` utilise par défaut `http://localhost:5173` (proxy Vite vers le backend). Pour pointer directement sur uvicorn : `export RAGUIA_LOCAL_API_BASE=http://127.0.0.1:8000` avant `install.sh`.  
+Pour le défaut interactif « prod ou local », vous pouvez fixer `RAGUIA_INSTALL_ENV=local`. Pour une autre origine prod : `RAGUIA_PORTAL_ORIGIN_PROD=https://…`.
+
+**Ancien mode (compatibilité)** — URL API complète en premier argument :
 
 ```bash
-./install.sh "" "" "" local
+./install.sh "https://raguia.valentin-fiess.fr" "VOTRE_JETON_AGENT" "/chemin/dossier/parent"
 ```
 
 #### Windows
 
-Ouvrez PowerShell ou l'Invite de commandes dans le dossier téléchargé et exécutez :
-
 ```powershell
-.\install.bat "https://raguia.client-domaine.com" "VOTRE_JETON_SAAS" "C:\chemin\vers\dossier\cible"
+.\install.bat prod mon-client-slug "VOTRE_JETON_AGENT"
+.\install.bat local mon-client-slug "VOTRE_JETON_AGENT"
 ```
 
-Vous pouvez aussi lancer simplement `.\install.bat` : le script vous guide en CLI et demande les champs manquants.
-Par défaut, l’URL proposée est `https://raguia.valentin-fiess.fr` (prod).  
-Pour forcer un setup local :
+Variables d’environnement identiques (`RAGUIA_INSTALL_ENV`, `RAGUIA_PORTAL_ORIGIN_PROD`, `RAGUIA_LOCAL_API_BASE`). Ancien mode : `.\install.bat "https://…" "JETON" "C:\Documents"`.
 
-```powershell
-.\install.bat "" "" "" local
-```
+Sans argument, `install.bat` demande le mode (prod/local), le slug, le jeton et le dossier parent.
 
-Le dossier `**.raguia_agent/**` est **fourni dans le dépôt** (scripts shell / batch). L’installation y ajoute ce qui est local à la machine : `**venv/`** (Python) et `**raguia_agent.yaml**` (jeton, chemins), non versionnés.  
-Les scripts `**start.sh**` / `**test.sh**` (macOS/Linux) créent désormais automatiquement `venv/` s’il est absent. En revanche, sans `**raguia_agent.yaml**` valide (généré par `**install.sh**` / `**install.bat**`), l’agent ne peut pas se connecter correctement.
+Le dossier `**.raguia_agent/**` est **fourni dans le dépôt** (scripts shell / batch). L’installation y ajoute ce qui est local à la machine : `**venv/`** (Python) et `**raguia_agent.yaml`** (jeton, chemins), non versionnés.  
+Les scripts `**start.sh`** / `**test.sh**` (macOS/Linux) créent désormais automatiquement `venv/` s’il est absent. En revanche, sans `**raguia_agent.yaml**` valide (généré par `**install.sh**` / `**install.bat**`), l’agent ne peut pas se connecter correctement.
 
 ### Démarrage automatique (fait par l’installateur)
 
@@ -98,8 +96,8 @@ Depuis la racine du clone : `./.raguia_agent/test.sh` ou `.\.raguia_agent\test.
 ### Erreur « no such file » ou venv manquant
 
 - Vous avez lancé `./test.sh` à la racine : utilisez `./.raguia_agent/test.sh` ou `cd .raguia_agent` d’abord.
-- **`python3` introuvable** : installez Python 3 puis relancez le script.
-- **Module introuvable** : exécutez `**install.sh`** / `**install.bat**` pour créer la configuration `raguia_agent.yaml` et préparer l’environnement local.
+- `**python3` introuvable** : installez Python 3 puis relancez le script.
+- **Module introuvable** : exécutez `**install.sh`** / `**install.bat`** pour créer la configuration `raguia_agent.yaml` et préparer l’environnement local.
 
 ## 3. Désactiver / ajuster le démarrage automatique
 
@@ -133,6 +131,7 @@ structured_logging: true
 ## 6. Confiance de la chaîne de mise à jour
 
 La mise à jour est refusée si :
+
 - la somme `sha256` est absente,
 - l'URL de téléchargement n'est pas en HTTPS,
 - l'hôte de téléchargement diffère de l'hôte du portail.
@@ -148,4 +147,3 @@ Renseigner côté backend (variables d'environnement) :
 - `LOCAL_AGENT_SHA256` (sha256 hex du script/fichier distribué)
 
 Sans `LOCAL_AGENT_VERSION`, l'endpoint `GET /api/portal/agent/version` renvoie `404`.
-

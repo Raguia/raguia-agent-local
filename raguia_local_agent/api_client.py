@@ -88,10 +88,18 @@ class PortalApiClient:
             preview = (r.text or "").strip().replace("\n", " ")[:200]
             parsed = urlparse(self.api_base)
             hint = ""
-            if "/portal/" in (parsed.path or "") or "text/html" in ct or preview.startswith("<!DOCTYPE") or preview.startswith("<html"):
+            path = parsed.path or ""
+            if "/portal/" in path:
                 hint = (
-                    " URL portail invalide : utilisez la racine (ex: https://mon-domaine.tld), "
+                    " Utilisez la racine du site (ex: https://mon-domaine.tld), "
                     "pas une URL de page comme /portal/<slug>."
+                )
+            elif "text/html" in ct or preview.startswith("<!DOCTYPE") or preview.startswith("<html"):
+                hint = (
+                    " Le serveur a renvoye une page HTML au lieu du JSON API — souvent "
+                    "`api_base` pointe vers le site statique ou le frontend seul. "
+                    "Mettez l'URL exacte du backend Raguia (meme origine que GET /health -> {\"status\":\"ok\"}), "
+                    "sans chemin supplementaire sauf si votre hebergeur expose l API sous un prefixe."
                 )
             raise ValueError(
                 f"{endpoint}: reponse 200 non-JSON (content-type={ct!r}, body={preview!r}).{hint}"
