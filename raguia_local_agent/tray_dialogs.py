@@ -15,9 +15,30 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+def _resolved_runner_python() -> str:
+    """Python pour sous-processus Tk : ``sys.executable`` peut pointer vers un binaire absent
+    (venv recréé avec seulement ``python``, ancien ``python3`` supprimé, lien cassé).
+    """
+    exe = Path(sys.executable)
+    if exe.is_file():
+        return str(exe.resolve())
+    parent = exe.parent
+    if sys.platform == "win32":
+        for name in ("python.exe", "python3.exe"):
+            p = parent / name
+            if p.is_file():
+                return str(p.resolve())
+    else:
+        for name in ("python", "python3"):
+            p = parent / name
+            if p.is_file():
+                return str(p.resolve())
+    return sys.executable
+
+
 def _run_tk_subprocess(code: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-c", code],
+        [_resolved_runner_python(), "-c", code],
         env={**os.environ, "TK_SILENCE_DEPRECATION": "1", "PYTHONUTF8": "1"},
         timeout=600,
         capture_output=True,

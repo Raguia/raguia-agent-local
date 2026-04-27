@@ -26,12 +26,16 @@ from typing import Callable, Optional
 from . import __version__ as AGENT_VERSION
 from .api_client import PortalApiClient
 from .config import AgentConfig
-from .queue_store import QueueStore
+from .queue_store import MAX_TRIES_BEFORE_STUCK, QueueStore
 from .state_store import StateStore
 from .updater import AgentUpdater
 from .watcher import _should_ignore, start_observer
 
 log = logging.getLogger(__name__)
+
+# Pour « Synchroniser maintenant » et la demande serveur : reprendre aussi les lignes
+# après MAX_TRIES_BEFORE_STUCK échecs (sinon pending_count > 0 mais pop_batch vide).
+_FORCE_POP_ATTEMPT_CAP = 10**9
 
 
 class SyncAgent:
@@ -103,17 +107,34 @@ class SyncAgent:
             if reason in ("force", "server_request")
             else self.cfg.stability_seconds
         )
+        attempt_cap = (
+            _FORCE_POP_ATTEMPT_CAP
+            if reason in ("force", "server_request")
+            else MAX_TRIES_BEFORE_STUCK
+        )
         batch = self.queue.pop_batch(
             self.cfg.max_files_per_cycle,
             min_age_seconds=min_age,
+            max_attempts=attempt_cap,
         )
         if not batch:
             if reason in ("force", "server_request"):
-                log.warning(
-                    "Sync (%s) : file d'attente vide ou aucun fichier eligible "
-                    "(extensions prevues, fichier vide, chemins ignores).",
-                    reason,
-                )
+                pend = self.queue.pending_count()
+                stk = self.queue.stuck_count()
+                if pend > 0:
+                    log.warning(
+                        "Sync (%s) : %d entrée(s) en queue SQLite mais aucun lot "
+                        "(vérifiez chemins abs_path, ou doublons anormaux — bloquées=%d).",
+                        reason,
+                        pend,
+                        stk,
+                    )
+                else:
+                    log.warning(
+                        "Sync (%s) : file d'attente vide ou aucun fichier eligible "
+                        "(extensions prévues par le watcher, fichier ignoré vide).",
+                        reason,
+                    )
             return metrics
 
         delete_items = [

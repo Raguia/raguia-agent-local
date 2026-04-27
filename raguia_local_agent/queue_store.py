@@ -26,7 +26,9 @@ CREATE INDEX IF NOT EXISTS idx_queue_queued ON queue(queued_at);
 CREATE INDEX IF NOT EXISTS idx_log_status  ON sync_log(status, synced_at);
 """
 
-_MAX_ATTEMPTS = 5
+# Tentatives après lesquelles une ligne reste dans la queue mais est ignorée par pop_batch
+# (sauf synchro forcée menu / portail — voir sync_agent.run_cycle).
+MAX_TRIES_BEFORE_STUCK = 5
 
 
 class QueueStore:
@@ -98,7 +100,7 @@ class QueueStore:
         self,
         max_n: int,
         min_age_seconds: float = 2.0,
-        max_attempts: int = _MAX_ATTEMPTS,
+        max_attempts: int = MAX_TRIES_BEFORE_STUCK,
     ) -> list[dict]:
         """Retourne un lot de fichiers stables (age >= min_age_seconds) et incremente attempts."""
         conn = self._conn()
@@ -163,13 +165,13 @@ class QueueStore:
             "SELECT COUNT(*) FROM queue WHERE COALESCE(event_type, 'modified') = 'deleted'"
         ).fetchone()[0]
 
-    def stuck_count(self, max_attempts: int = _MAX_ATTEMPTS) -> int:
+    def stuck_count(self, max_attempts: int = MAX_TRIES_BEFORE_STUCK) -> int:
         """Fichiers bloques (trop de tentatives) - souvent Word/Excel verrouillesou fichiers corrompus."""
         return self._conn().execute(
             "SELECT COUNT(*) FROM queue WHERE attempts >= ?", (max_attempts,)
         ).fetchone()[0]
 
-    def reset_stuck(self, max_attempts: int = _MAX_ATTEMPTS) -> int:
+    def reset_stuck(self, max_attempts: int = MAX_TRIES_BEFORE_STUCK) -> int:
         """Remet les fichiers bloques a zero (appele manuellement depuis le tray)."""
         conn = self._conn()
         cur = conn.execute(

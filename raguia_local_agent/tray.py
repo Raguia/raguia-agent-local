@@ -425,7 +425,15 @@ class RaguiaTray:
             pystray.MenuItem("Mettre a jour le jeton JWT…", update_jwt),
             pystray.MenuItem("Desinstaller l'agent…", uninstall_agent),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"{pending} fichier(s) en attente", None, enabled=False),
+            pystray.MenuItem(
+                (
+                    f"{pending} fichier(s) en attente ({stuck} bloque(s))"
+                    if stuck
+                    else f"{pending} fichier(s) en attente"
+                ),
+                None,
+                enabled=False,
+            ),
             pystray.MenuItem(f"Derniere sync : {last_str}", None, enabled=False),
         ]
         if stuck > 0:

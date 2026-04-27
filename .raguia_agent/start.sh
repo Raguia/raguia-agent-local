@@ -15,9 +15,22 @@ fi
 source venv/bin/activate
 export RAGUIA_AGENT_CONFIG="$(pwd)/raguia_agent.yaml"
 
-# Garantit la presence des deps tray (pystray/Pillow) pour l'icone macOS.
-if ! python3 -c "import pystray, PIL" >/dev/null 2>&1; then
-  python3 -m pip install -e "..[tray]" || exit 1
+# Interprete du venv : uv peut ne creer que ``python``, pas ``python3``.
+VENV_PY=""
+for cand in venv/bin/python venv/bin/python3; do
+  if [ -x "$cand" ]; then
+    VENV_PY="$cand"
+    break
+  fi
+done
+if [ -z "$VENV_PY" ]; then
+  echo "Erreur: aucun interprete executable dans venv/bin (python / python3)."
+  exit 1
 fi
 
-python3 -m raguia_local_agent
+# Garantit la presence des deps tray (pystray/Pillow) pour l'icone macOS.
+if ! "$VENV_PY" -c "import pystray, PIL" >/dev/null 2>&1; then
+  "$VENV_PY" -m pip install -e "..[tray]" || exit 1
+fi
+
+exec "$VENV_PY" -m raguia_local_agent
