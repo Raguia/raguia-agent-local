@@ -49,7 +49,9 @@ class AgentConfig:
     poll_interval_seconds: float = 30.0
     stability_seconds: float = 2.0
     sync_cooldown_seconds: float = 900.0
-    burst_threshold: int = 20
+    # Nombre minimal de fichiers en file pour declencher une synchro auto (avec cooldown).
+    # Ancienne valeur 20 : une seule modification ne partait jamais sans clic « Synchroniser ».
+    burst_threshold: int = 1
     max_files_per_cycle: int = 100
     auto_update: bool = True
     auto_update_check_hours: float = 24.0

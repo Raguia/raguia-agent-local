@@ -15,9 +15,10 @@ root_folder_name: "RAGUIA"
 poll_interval_seconds: 30
 stability_seconds: 2
 
-# Semi-automatique : rafale locale (nombre de fichiers en attente) + cooldown
+# Synchro auto : au moins burst_threshold fichier(s) en attente + cooldown ecoule.
+# Mettre 20 uniquement pour limiter les envois par gros lots (sinon les petits dossiers ne partent pas).
 sync_cooldown_seconds: 900
-burst_threshold: 20
+burst_threshold: 1
 max_files_per_cycle: 100
 
 dry_run: false

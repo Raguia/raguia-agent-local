@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 # après MAX_TRIES_BEFORE_STUCK échecs (sinon pending_count > 0 mais pop_batch vide).
 _FORCE_POP_ATTEMPT_CAP = 10**9
 
+# Seuil (octets) au-delà duquel on logue un avertissement « gros fichier » avant upload.
+_MAX_FILE_SIZE_WARN = 50 * 1024 * 1024
+
 
 class SyncAgent:
     def __init__(self, cfg: AgentConfig) -> None:
@@ -57,6 +60,7 @@ class SyncAgent:
 
         # Callback pour le tray (optionnel)
         self.on_status_change: Optional[Callable] = None
+        self._pending_hint_ts: float = 0.0
 
     def _get_local_folder_size(self) -> int:
         total = 0
@@ -368,6 +372,28 @@ class SyncAgent:
                         self._emit("idle")
                     elif pending > 0:
                         self._emit("idle", f"{pending} en attente")
+                        # Expliquer pourquoi aucune synchro auto ne part (sans erreur HTTP).
+                        now = time.time()
+                        if now - self._pending_hint_ts >= 120:
+                            self._pending_hint_ts = now
+                            if pending < self.cfg.burst_threshold:
+                                log.warning(
+                                    "Synchro auto inactive : %d fichier(s) en attente mais "
+                                    "burst_threshold=%d (il faut au moins autant de fichiers "
+                                    "pour declencher un envoi automatique). "
+                                    "Menu : « Synchroniser maintenant », ou baissez burst_threshold dans la config.",
+                                    pending,
+                                    self.cfg.burst_threshold,
+                                )
+                            elif not cooldown_ok:
+                                left = self.cfg.sync_cooldown_seconds - (
+                                    now - last_cooldown_ts
+                                )
+                                log.info(
+                                    "Synchro auto en cooldown (~%.0f s). %d fichier(s) en attente.",
+                                    max(0.0, left),
+                                    pending,
+                                )
 
                 # Si le portail est toujours injoignable et aucune synchro lancee, attendre avant le prochain poll
                 if not sync_ok and not reason:
