@@ -80,6 +80,15 @@ class PortalApiClient:
             headers=self._headers,
         )
 
+    def _ensure_http_client(self) -> None:
+        """Recree le client httpx si la boucle agent a appele close() (diagnostic / jeton)."""
+        if getattr(self._client, "is_closed", False):
+            self._client = httpx.Client(
+                trust_env=False,
+                follow_redirects=False,
+                headers=dict(self._headers),
+            )
+
     def _parse_json_or_raise(self, r: httpx.Response, endpoint: str) -> dict[str, Any]:
         try:
             payload = r.json()
@@ -114,10 +123,18 @@ class PortalApiClient:
             raise ValueError("Jeton vide")
         self.agent_token = token
         self._headers = {"Authorization": f"Bearer {token}"}
-        self._client.headers.clear()
-        self._client.headers.update(self._headers)
+        if getattr(self._client, "is_closed", False):
+            self._client = httpx.Client(
+                trust_env=False,
+                follow_redirects=False,
+                headers=dict(self._headers),
+            )
+        else:
+            self._client.headers.clear()
+            self._client.headers.update(self._headers)
 
     def sync_status(self) -> dict[str, Any]:
+        self._ensure_http_client()
         r = _request_with_retry(
             self._client,
             "GET",
@@ -129,6 +146,7 @@ class PortalApiClient:
 
     def refresh_token(self) -> dict[str, Any]:
         """Demande un nouveau token au portail."""
+        self._ensure_http_client()
         r = _request_with_retry(
             self._client,
             "POST",
@@ -140,6 +158,7 @@ class PortalApiClient:
 
     def agent_version_info(self) -> dict[str, Any]:
         """Metadonnees MAJ agent (GET /api/portal/agent/version, JWT agent)."""
+        self._ensure_http_client()
         r = _request_with_retry(
             self._client,
             "GET",
@@ -151,6 +170,7 @@ class PortalApiClient:
 
     def delete_local(self, relative_path: str) -> dict[str, Any]:
         """Met en corbeille sur le portail le document lié à ce chemin relatif."""
+        self._ensure_http_client()
         r = _request_with_retry(
             self._client,
             "POST",
@@ -164,6 +184,7 @@ class PortalApiClient:
     def sync_complete(
         self, metrics: Optional[dict[str, Any]] = None, error: Optional[str] = None
     ) -> None:
+        self._ensure_http_client()
         r = _request_with_retry(
             self._client,
             "POST",
@@ -183,6 +204,7 @@ class PortalApiClient:
         if len(paths) != len(metadata):
             raise ValueError("paths et metadata doivent avoir la meme longueur")
 
+        self._ensure_http_client()
         data = {
             "metadata_json": json.dumps(metadata, ensure_ascii=False),
             "dry_run": str(dry_run).lower(),

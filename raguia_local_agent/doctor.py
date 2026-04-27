@@ -68,6 +68,14 @@ def _format_portal_check_error(exc: Exception) -> str:
         msg = str(exc).strip()
         return msg[:300] if msg else repr(exc)[:300]
 
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if "closed" in msg and "client" in msg:
+            return (
+                "Client HTTP interne deja ferme — redemarrez l'agent une fois pour appliquer "
+                "(sinon mise a jour applicative)."
+            )
+
     return f"{type(exc).__name__}: {exc!s}"[:300]
 
 
