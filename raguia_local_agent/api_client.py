@@ -138,6 +138,17 @@ class PortalApiClient:
         r.raise_for_status()
         return self._parse_json_or_raise(r, "refresh-token")
 
+    def agent_version_info(self) -> dict[str, Any]:
+        """Metadonnees MAJ agent (GET /api/portal/agent/version, JWT agent)."""
+        r = _request_with_retry(
+            self._client,
+            "GET",
+            f"{self.api_base}/api/portal/agent/version",
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        return self._parse_json_or_raise(r, "agent/version")
+
     def delete_local(self, relative_path: str) -> dict[str, Any]:
         """Met en corbeille sur le portail le document lié à ce chemin relatif."""
         r = _request_with_retry(

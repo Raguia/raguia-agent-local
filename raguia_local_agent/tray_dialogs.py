@@ -102,6 +102,39 @@ def show_message(title: str, message: str, *, kind: str = "info") -> None:
         log.exception("show_message: %s", e)
 
 
+def confirm_agent_update(current_version: str, new_version: str) -> bool:
+    """Telechargement et execution du script serveur — demande confirmation."""
+    body = (
+        f"Une mise a jour de l'agent est disponible.\n\n"
+        f"Version installee : {current_version}\n"
+        f"Version proposee : {new_version}\n\n"
+        "Le script officiel sera telecharge depuis le serveur (HTTPS, hash verifie).\n"
+        "Continuer ?"
+    )
+    script = (
+        "import tkinter as tk\n"
+        "from tkinter import messagebox\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "try:\n"
+        "    root.lift()\n"
+        "    root.attributes('-topmost', True)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "try:\n"
+        f"    ok = messagebox.askyesno({repr('Raguia — Mise a jour')}, {repr(body)}, parent=root, icon='question')\n"
+        "finally:\n"
+        "    root.destroy()\n"
+        "print('1' if ok else '0')\n"
+    )
+    try:
+        r = _run_tk_subprocess(script)
+        return (r.stdout or "").strip() == "1"
+    except Exception as e:
+        log.exception("confirm_agent_update: %s", e)
+        return False
+
+
 def confirm_uninstall() -> bool:
     body = (
         "Confirmer la desinstallation complete de l'agent ?\n\n"

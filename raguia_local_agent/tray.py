@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .sync_agent import SyncAgent
 
 from . import tray_dialogs
+from . import __version__ as AGENT_VERSION
 from .doctor import run_doctor
 from .logging_utils import export_support_bundle
 from .secret_store import save_token
@@ -365,6 +366,70 @@ class RaguiaTray:
                     kind="error",
                 )
 
+        def run_update_ui(icon, item):
+            """Verifie la version sur le serveur et propose d'installer le script de MAJ."""
+
+            def work() -> None:
+                up = self._agent.updater
+                try:
+                    data = up.client.agent_version_info()
+                except Exception as e:
+                    tray_dialogs.show_message(
+                        "Mise a jour",
+                        f"Impossible de joindre le serveur :\n{e!s}"[:800],
+                        kind="error",
+                    )
+                    return
+
+                latest_raw = data.get("version")
+                latest = str(latest_raw).strip() if latest_raw else ""
+                if not latest:
+                    tray_dialogs.show_message(
+                        "Mise a jour",
+                        "Le serveur ne publie pas encore de numero de version pour l'agent "
+                        "(variable d'environnement LOCAL_AGENT_VERSION cote administrateur).",
+                        kind="warning",
+                    )
+                    return
+
+                cur = AGENT_VERSION.strip()
+                if latest == cur:
+                    tray_dialogs.show_message(
+                        "Mise a jour",
+                        f"Version installee : {cur}\n"
+                        f"Version serveur : {latest}\n\n"
+                        "Vous etes a jour.",
+                        kind="info",
+                    )
+                    return
+
+                dl = (data.get("download_url") or "").strip()
+                sha = (data.get("sha256") or "").strip()
+                if not dl or not sha:
+                    tray_dialogs.show_message(
+                        "Mise a jour incomplete",
+                        f"La version {latest} est annoncee mais le serveur n'expose pas "
+                        "encore l'URL HTTPS et le SHA256 du paquet "
+                        "(LOCAL_AGENT_DOWNLOAD_URL, LOCAL_AGENT_SHA256).\n\n"
+                        "Contactez votre administrateur.",
+                        kind="warning",
+                    )
+                    return
+
+                if not tray_dialogs.confirm_agent_update(cur, latest):
+                    return
+
+                ok = up.perform_update(data)
+                tray_dialogs.show_message(
+                    "Mise a jour",
+                    "Installation terminee. Quittez puis redemarrez l'agent."
+                    if ok
+                    else "L'installation a echoue — consultez les logs.",
+                    kind="info" if ok else "error",
+                )
+
+            threading.Thread(target=work, daemon=True).start()
+
         pending = self._agent.queue.pending_count()
         stuck   = self._agent.queue.stuck_count()
         last_ts = self._agent.queue.last_sync_at()
@@ -385,6 +450,7 @@ class RaguiaTray:
             pystray.MenuItem("Ouvrir le dossier RAGUIA", open_folder),
             pystray.MenuItem("Synchroniser maintenant", sync_now),
             pystray.MenuItem("Lancer un diagnostic (Doctor)…", run_doctor_ui),
+            pystray.MenuItem("Verifier / installer mise a jour…", run_update_ui),
             pystray.MenuItem("Exporter un bundle support…", export_support),
             pystray.MenuItem("Mettre a jour le jeton JWT…", update_jwt),
             pystray.MenuItem("Desinstaller l'agent…", uninstall_agent),

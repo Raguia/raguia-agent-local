@@ -30,22 +30,17 @@ class AgentUpdater:
         Retourne True si une mise a jour est disponible.
         """
         try:
-            r = httpx.get(
-                f"{self.client.api_base}/api/portal/agent/version",
-                headers=self.client._headers,
-                timeout=15.0,
-                trust_env=False,
-            )
-            if r.status_code == 404:
-                return False  # endpoint non implemente, silencieux
-            r.raise_for_status()
-            data = r.json()
-            latest = data.get("version", "")
-            if latest and latest != current_version:
+            data = self.client.agent_version_info()
+            latest_raw = data.get("version")
+            latest = str(latest_raw).strip() if latest_raw else ""
+            if not latest:
+                return False
+            if latest != str(current_version).strip():
                 log.info(
                     "Mise a jour disponible : %s -> %s. "
-                    "Relancez l'agent pour l'appliquer.",
-                    current_version, latest,
+                    "Menu icone : Verifier / installer mise a jour.",
+                    current_version,
+                    latest,
                 )
                 return True
         except Exception as e:

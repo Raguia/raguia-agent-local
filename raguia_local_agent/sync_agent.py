@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import __version__ as AGENT_VERSION
 from .api_client import PortalApiClient
 from .config import AgentConfig
 from .queue_store import QueueStore
@@ -31,8 +32,6 @@ from .updater import AgentUpdater
 from .watcher import _should_ignore, start_observer
 
 log = logging.getLogger(__name__)
-
-AGENT_VERSION = "0.1.0"
 
 
 class SyncAgent:
