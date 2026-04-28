@@ -61,10 +61,10 @@ if defined RAGUIA_INSTALL_ENV (
 ) else (
   set "DEFMODE=prod"
 )
-set /p RUNTIME_ENV=Mode [prod / local] (defaut: !DEFMODE!): 
+set /p RUNTIME_ENV=Mode [prod / local] [defaut: !DEFMODE!]: 
 if "!RUNTIME_ENV!"=="" set "RUNTIME_ENV=!DEFMODE!"
 if /I not "!RUNTIME_ENV!"=="local" set "RUNTIME_ENV=prod"
-set /p CLIENT_SLUG=Slug portail / identifiant client (ex: client-acme): 
+set /p CLIENT_SLUG=Slug portail / identifiant client [ex: client-acme]: 
 
 :after_parse
 if /I "!RUNTIME_ENV!"=="local" (
@@ -75,7 +75,7 @@ if /I "!RUNTIME_ENV!"=="local" (
 )
 
 if "!LEGACY_MODE!"=="0" (
-  if "!CLIENT_SLUG!"=="" set /p CLIENT_SLUG=Slug portail / identifiant client (ex: client-acme): 
+  if "!CLIENT_SLUG!"=="" set /p CLIENT_SLUG=Slug portail / identifiant client [ex: client-acme]: 
   if "!CLIENT_SLUG!"=="" (
     echo Le slug client est obligatoire.
     exit /b 1
@@ -85,7 +85,7 @@ if "!LEGACY_MODE!"=="0" (
 
 :parsed
 if "!API_BASE!"=="" (
-  set /p API_BASE=URL API — api_base (defaut: !DEFAULT_API_BASE!): 
+  set /p API_BASE=URL API - api_base [defaut: !DEFAULT_API_BASE!]: 
 )
 if "!API_BASE!"=="" set "API_BASE=!DEFAULT_API_BASE!"
 
@@ -101,7 +101,7 @@ exit /b 1
 :okargs
 
 if "!WATCH_PARENT!"=="" (
-  set /p WATCH_PARENT=Dossier parent (defaut: %USERPROFILE%\Documents): 
+  set /p WATCH_PARENT=Dossier parent [defaut: %USERPROFILE%\Documents]: 
 )
 if "!WATCH_PARENT!"=="" set "WATCH_PARENT=%USERPROFILE%\Documents"
 
