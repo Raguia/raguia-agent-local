@@ -32,6 +32,10 @@ Pour que l'installation automatique se déroule sans encombre, vérifiez ces pr�
 
 **Option A : Par Git (Fortement recommandée pour les mises à jour automatiques)**
 Ouvrez votre terminal (Terminal sur macOS/Linux, PowerShell ou Invite de commandes sur Windows) :
+
+```bash
+winget install --id Git.Git -e --source winget   
+```
 ```bash
 git clone https://github.com/ValMtp3/raguia-agent-local.git
 cd raguia-agent-local

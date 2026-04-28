@@ -13,15 +13,15 @@ set "A1=%~1"
 if "%A1:~0,8%"=="https://" set "LEGACY_MODE=1"
 if "%A1:~0,7%"=="http://" set "LEGACY_MODE=1"
 
-if "%RAGUIA_PORTAL_ORIGIN_PROD%"=="" (
-  set "DEFAULT_API_PROD=https://raguia.valentin-fiess.fr"
-) else (
+if defined RAGUIA_PORTAL_ORIGIN_PROD (
   set "DEFAULT_API_PROD=%RAGUIA_PORTAL_ORIGIN_PROD%"
-)
-if "%RAGUIA_LOCAL_API_BASE%"=="" (
-  set "DEFAULT_API_LOCAL=http://localhost:5173"
 ) else (
+  set "DEFAULT_API_PROD=https://raguia.valentin-fiess.fr"
+)
+if defined RAGUIA_LOCAL_API_BASE (
   set "DEFAULT_API_LOCAL=%RAGUIA_LOCAL_API_BASE%"
+) else (
+  set "DEFAULT_API_LOCAL=http://localhost:5173"
 )
 
 set "API_BASE="
@@ -56,7 +56,7 @@ set "WATCH_PARENT=%~4"
 goto after_parse
 
 :interactive_new
-if not "%RAGUIA_INSTALL_ENV%"=="" (
+if defined RAGUIA_INSTALL_ENV (
   set "DEFMODE=%RAGUIA_INSTALL_ENV%"
 ) else (
   set "DEFMODE=prod"
