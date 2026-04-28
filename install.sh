@@ -110,6 +110,67 @@ AGENT_DIR="$SCRIPT_DIR/.raguia_agent"
 PLIST_LABEL="com.raguia.local.agent"
 SYSTEMD_USER_UNIT="raguia-agent.service"
 
+install_git_if_missing() {
+    if command -v git >/dev/null 2>&1; then
+        return 0
+    fi
+    echo -e "${YELLOW}git absent: tentative d'installation automatique...${NC}"
+
+    case "$(uname -s)" in
+        Darwin)
+            if command -v brew >/dev/null 2>&1; then
+                brew install git || true
+            else
+                echo -e "${YELLOW}Homebrew absent. Installation de git non automatique sur ce mac.${NC}"
+            fi
+            ;;
+        Linux)
+            if command -v apt-get >/dev/null 2>&1; then
+                if command -v sudo >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y git || true
+                else
+                    apt-get update && apt-get install -y git || true
+                fi
+            elif command -v dnf >/dev/null 2>&1; then
+                if command -v sudo >/dev/null 2>&1; then
+                    sudo dnf install -y git || true
+                else
+                    dnf install -y git || true
+                fi
+            elif command -v yum >/dev/null 2>&1; then
+                if command -v sudo >/dev/null 2>&1; then
+                    sudo yum install -y git || true
+                else
+                    yum install -y git || true
+                fi
+            elif command -v pacman >/dev/null 2>&1; then
+                if command -v sudo >/dev/null 2>&1; then
+                    sudo pacman -Sy --noconfirm git || true
+                else
+                    pacman -Sy --noconfirm git || true
+                fi
+            elif command -v zypper >/dev/null 2>&1; then
+                if command -v sudo >/dev/null 2>&1; then
+                    sudo zypper --non-interactive install git || true
+                else
+                    zypper --non-interactive install git || true
+                fi
+            else
+                echo -e "${YELLOW}Aucun gestionnaire supporte detecte (apt/dnf/yum/pacman/zypper).${NC}"
+            fi
+            ;;
+        *)
+            echo -e "${YELLOW}OS non reconnu pour l'installation automatique de git.${NC}"
+            ;;
+    esac
+
+    if ! command -v git >/dev/null 2>&1; then
+        echo -e "${RED}git reste introuvable.${NC}"
+        echo "Installez git puis relancez: https://git-scm.com/downloads"
+        exit 1
+    fi
+}
+
 PORTAL_HINT=""
 if [[ -n "$CLIENT_SLUG" ]]; then
     PORTAL_HINT="$API_BASE/portal/$CLIENT_SLUG"
@@ -181,10 +242,7 @@ EOF
 }
 
 echo -e "\n${GREEN}1. Installation de 'uv' et Python...${NC}"
-if ! command -v git >/dev/null 2>&1; then
-    echo -e "${RED}git est requis pour les mises à jour de l'agent.${NC}"
-    exit 1
-fi
+install_git_if_missing
 if ! command -v uv &> /dev/null; then
     if ! command -v curl >/dev/null 2>&1; then
         echo -e "${RED}curl est requis pour installer uv automatiquement.${NC}"

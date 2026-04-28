@@ -113,6 +113,25 @@ if not "!CLIENT_SLUG!"=="" set "PORTAL_HINT=!API_BASE!/portal/!CLIENT_SLUG!"
 
 echo.
 echo 1. Installation de 'uv' et Python...
+where git >nul 2>&1
+if errorlevel 1 (
+  echo git absent: tentative d'installation automatique...
+  where winget >nul 2>&1
+  if not errorlevel 1 (
+    winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+  ) else (
+    where choco >nul 2>&1
+    if not errorlevel 1 (
+      choco install git -y
+    )
+  )
+)
+where git >nul 2>&1
+if errorlevel 1 (
+  echo [ERREUR] git introuvable apres tentative automatique.
+  echo Installez git: https://git-scm.com/download/win
+  exit /b 1
+)
 where uv >nul 2>&1
 if errorlevel 1 (
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
