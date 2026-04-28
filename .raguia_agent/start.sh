@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 cd "$(dirname "$0")"
 # Racine du clone git (parent de .raguia_agent) — utilisé par builtin_update.py / MAJ depuis le menu
 export RAGUIA_AGENT_REPO="$(cd .. && pwd)"
@@ -14,6 +15,10 @@ fi
 
 source venv/bin/activate
 export RAGUIA_AGENT_CONFIG="$(pwd)/raguia_agent.yaml"
+if [ ! -f "$RAGUIA_AGENT_CONFIG" ]; then
+  echo "Erreur: configuration introuvable ($RAGUIA_AGENT_CONFIG). Lance d'abord install.sh."
+  exit 1
+fi
 
 # Interprete du venv : uv peut ne creer que ``python``, pas ``python3``.
 VENV_PY=""
@@ -26,6 +31,11 @@ done
 if [ -z "$VENV_PY" ]; then
   echo "Erreur: aucun interprete executable dans venv/bin (python / python3)."
   exit 1
+fi
+
+# Venvs (notamment via uv) peuvent ne pas embarquer pip: bootstrap defensif.
+if ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+  "$VENV_PY" -m ensurepip --upgrade >/dev/null 2>&1 || true
 fi
 
 # Garantit la presence des deps tray (pystray/Pillow) pour l'icone macOS.

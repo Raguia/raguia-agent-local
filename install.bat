@@ -118,7 +118,16 @@ if errorlevel 1 (
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
   set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 )
+where uv >nul 2>&1
+if errorlevel 1 (
+  echo [ERREUR] uv introuvable apres installation.
+  exit /b 1
+)
 call uv python install 3.11
+if errorlevel 1 (
+  echo [ERREUR] Impossible d'installer Python 3.11 via uv.
+  exit /b 1
+)
 
 echo.
 echo 2. Creation de la configuration...
@@ -135,8 +144,20 @@ echo.
 echo 3. Installation des dependances...
 cd /d "%SCRIPT_DIR%"
 call uv venv "%AGENT_DIR%\venv" --python 3.11
+if errorlevel 1 (
+  echo [ERREUR] Creation du venv impossible.
+  exit /b 1
+)
 call "%AGENT_DIR%\venv\Scripts\activate.bat"
+if errorlevel 1 (
+  echo [ERREUR] Activation du venv impossible.
+  exit /b 1
+)
 call uv pip install -e ".[tray]"
+if errorlevel 1 (
+  echo [ERREUR] Installation des dependances impossible.
+  exit /b 1
+)
 
 echo.
 echo 4. Test de connexion...

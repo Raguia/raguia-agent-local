@@ -18,6 +18,11 @@ NC='\033[0m'
 
 echo -e "${YELLOW}=== Mise à jour Agent Raguia (git pull + dépendances) ===${NC}"
 
+if ! command -v git >/dev/null 2>&1; then
+    echo "git introuvable. Installez git puis relancez."
+    exit 1
+fi
+
 if [[ ! -d .git ]]; then
     echo -e "${YELLOW}Pas de dossier .git dans ${SCRIPT_DIR}.${NC}"
     echo "Sans dépôt git, refaites : git clone https://github.com/ValMtp3/raguia-agent-local.git puis install.sh"

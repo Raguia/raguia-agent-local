@@ -16,7 +16,7 @@
 #   RAGUIA_LOCAL_API_BASE=...        — origine dev (défaut http://localhost:5173, proxy Vite → :8000)
 #                                      Mettre http://127.0.0.1:8000 pour parler au backend seul.
 
-set -e
+set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -181,9 +181,21 @@ EOF
 }
 
 echo -e "\n${GREEN}1. Installation de 'uv' et Python...${NC}"
+if ! command -v git >/dev/null 2>&1; then
+    echo -e "${RED}git est requis pour les mises à jour de l'agent.${NC}"
+    exit 1
+fi
 if ! command -v uv &> /dev/null; then
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${RED}curl est requis pour installer uv automatiquement.${NC}"
+        exit 1
+    fi
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.cargo/bin:$PATH"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+    echo -e "${RED}uv est introuvable après installation.${NC}"
+    exit 1
 fi
 uv python install 3.11
 

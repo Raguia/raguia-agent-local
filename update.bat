@@ -6,6 +6,12 @@ cd /d "%~dp0"
 
 echo === Mise a jour Agent Raguia (git pull + dependances) ===
 
+where git >nul 2>&1
+if errorlevel 1 (
+  echo git introuvable. Installez git puis relancez.
+  exit /b 1
+)
+
 if not exist ".git" (
   echo Pas de dossier .git ici. Refaites git clone puis install.bat
   exit /b 1
@@ -16,6 +22,10 @@ if "!BRANCH!"=="" set "BRANCH=main"
 
 echo git fetch / pull (!BRANCH!)...
 git fetch origin !BRANCH!
+if errorlevel 1 (
+  echo [ERREUR] git fetch a echoue.
+  exit /b 1
+)
 git pull --ff-only origin !BRANCH!
 if errorlevel 1 (
   echo Essai git pull sans ff-only...
