@@ -61,10 +61,11 @@ if defined RAGUIA_INSTALL_ENV (
 ) else (
   set "DEFMODE=prod"
 )
-set /p RUNTIME_ENV=Mode [prod / local] [defaut: !DEFMODE!]: 
+REM Invites entre guillemets : sinon "/" "(" ")" dans le libelle cassent cmd ("set etait inattendu").
+set /p "RUNTIME_ENV=Mode prod ou local - defaut !DEFMODE! Entree pour garder : "
 if "!RUNTIME_ENV!"=="" set "RUNTIME_ENV=!DEFMODE!"
 if /I not "!RUNTIME_ENV!"=="local" set "RUNTIME_ENV=prod"
-set /p CLIENT_SLUG=Slug portail / identifiant client [ex: client-acme]: 
+set /p "CLIENT_SLUG=Slug portail identifiant client ex. client-acme : "
 
 :after_parse
 if /I "!RUNTIME_ENV!"=="local" (
@@ -75,7 +76,7 @@ if /I "!RUNTIME_ENV!"=="local" (
 )
 
 if "!LEGACY_MODE!"=="0" (
-  if "!CLIENT_SLUG!"=="" set /p CLIENT_SLUG=Slug portail / identifiant client [ex: client-acme]: 
+  if "!CLIENT_SLUG!"=="" set /p "CLIENT_SLUG=Slug portail identifiant client : "
   if "!CLIENT_SLUG!"=="" (
     echo Le slug client est obligatoire.
     exit /b 1
@@ -85,11 +86,11 @@ if "!LEGACY_MODE!"=="0" (
 
 :parsed
 if "!API_BASE!"=="" (
-  set /p API_BASE=URL API - api_base [defaut: !DEFAULT_API_BASE!]: 
+  set /p "API_BASE=URL API api_base defaut !DEFAULT_API_BASE! Entree pour garder : "
 )
 if "!API_BASE!"=="" set "API_BASE=!DEFAULT_API_BASE!"
 
-if "!TOKEN!"=="" set /p TOKEN=Jeton JWT agent: 
+if "!TOKEN!"=="" set /p "TOKEN=Jeton JWT agent : "
 if "!API_BASE!"=="" goto usage
 if "!TOKEN!"=="" goto usage
 goto okargs
@@ -101,7 +102,8 @@ exit /b 1
 :okargs
 
 if "!WATCH_PARENT!"=="" (
-  set /p WATCH_PARENT=Dossier parent [defaut: %USERPROFILE%\Documents]: 
+  echo Defaut si vide: %USERPROFILE%\Documents
+  set /p "WATCH_PARENT=Dossier parent ou Entree pour ce defaut : "
 )
 if "!WATCH_PARENT!"=="" set "WATCH_PARENT=%USERPROFILE%\Documents"
 
@@ -134,8 +136,15 @@ if errorlevel 1 (
 )
 where uv >nul 2>&1
 if errorlevel 1 (
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+  REM -NoProfile : evite Get-ExecutionPolicy et modules casse (CI, certains PC).
+  REM uv peut finir dans .local\bin ou .cargo\bin selon la version du script.
+  where pwsh >nul 2>&1
+  if not errorlevel 1 (
+    pwsh -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
+  ) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
+  )
+  set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%PATH%"
 )
 where uv >nul 2>&1
 if errorlevel 1 (
