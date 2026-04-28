@@ -189,25 +189,25 @@ if errorlevel 1 (
 
 echo.
 echo 4. Test de connexion...
-python -c "import httpx, yaml, sys; cfg = yaml.safe_load(open(r'%AGENT_DIR%\raguia_agent.yaml')); r = httpx.get(cfg['api_base'] + '/api/portal/agent/sync-status', headers={'Authorization': f'Bearer {cfg[\"agent_token\"]}'}, timeout=10.0); sys.exit(1) if r.status_code != 200 else None; d = r.json(); sys.exit(0 if isinstance(d, dict) else 1)"
+REM Sans f-string ni \" dans -c (cmd casse la ligne ; secrets peuvent etre mal masques en CI).
+if defined RAGUIA_SKIP_CONNECTION_TEST (
+  echo   Test HTTP ignore ^(RAGUIA_SKIP_CONNECTION_TEST defini^).
+  goto after_conn_test
+)
+python -c "import httpx,yaml,sys;cfg=yaml.safe_load(open(r'%AGENT_DIR%\raguia_agent.yaml'));t=str(cfg['agent_token']);u=str(cfg['api_base']).rstrip('/');r=httpx.get(u+'/api/portal/agent/sync-status',headers={'Authorization':'Bearer '+t},timeout=10.0);raise SystemExit(0 if r.status_code==200 and isinstance(r.json(),dict) else 1)"
 if errorlevel 1 (
   echo   [ERREUR] Connexion echouee
 ) else (
   echo   Connexion reussie!
 )
+:after_conn_test
 
 echo.
 echo 5. Raccourci Demarrage Windows...
 set "RAGUIA_START_BAT=%AGENT_DIR%\start.bat"
 set "RAGUIA_AGENT_DIR=%AGENT_DIR%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ws = New-Object -ComObject WScript.Shell; ^
-   $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Raguia Agent.lnk'; ^
-   $sc = $ws.CreateShortcut($startup); ^
-   $sc.TargetPath = $env:RAGUIA_START_BAT; ^
-   $sc.WorkingDirectory = $env:RAGUIA_AGENT_DIR.TrimEnd('\'); ^
-   $sc.Save(); ^
-   Write-Host ('Raccourci cree : ' + $startup)"
+REM Une seule ligne : les ^ continuations cmd ne passent pas si install.bat est appele depuis pwsh.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell;$p=Join-Path ([Environment]::GetFolderPath('Startup')) 'Raguia Agent.lnk';$s=$ws.CreateShortcut($p);$s.TargetPath=$env:RAGUIA_START_BAT;$s.WorkingDirectory=$env:RAGUIA_AGENT_DIR.TrimEnd([char]92);$s.Save();Write-Host ('Raccourci cree : '+$p)"
 
 if not exist "%WATCH_PARENT%\RAGUIA" mkdir "%WATCH_PARENT%\RAGUIA"
 echo.
