@@ -510,29 +510,52 @@ class RaguiaTray:
 
                     self._set_busy_message("Connexion au portail et recuperation du token agent...")
                     old_token = self._agent.cfg.agent_token
+
+                    # Etape 1 : authentification aupres du portail.
+                    # Toute erreur ici signifie de mauvais credentials ou reseau
+                    # inaccessible → on n'a pas de token, on abandonne.
                     try:
                         payload = portal_agent_login(self._agent.cfg.api_base, slug, password)
                         new_token = str(payload.get("agent_access_token") or "").strip()
                         if not new_token:
                             raise ValueError("Le portail n'a pas retourne de token agent.")
-                        self._agent.update_agent_token(new_token)
-                        self._agent.client.sync_status()
                     except Exception as e:
-                        with suppress(Exception):
-                            self._agent.update_agent_token(old_token)
-                        if hasattr(e, "response"):
-                            try:
-                                detail = http_response_detail(e.response)  # type: ignore[attr-defined]
-                            except Exception:
-                                detail = str(e)
-                        else:
-                            detail = str(e)
+                        detail = http_response_detail(e.response) if hasattr(e, "response") else str(e)  # type: ignore[attr-defined]
                         tray_dialogs.show_message(
                             "Connexion refusee",
                             f"Echec de connexion portail:\n{detail}",
                             kind="error",
                         )
                         return
+
+                    # Etape 2 : le token est obtenu — on l'active en memoire.
+                    self._agent.update_agent_token(new_token)
+
+                    # Etape 3 : verification que le portail accepte ce token.
+                    # On distingue les erreurs :
+                    #   401 → token invalide cote serveur : on restaure l'ancien et on arrete.
+                    #   autre (reseau, 500...) → le token peut quand meme etre valide,
+                    #   on le sauvegarde et on previent l'utilisateur.
+                    _sync_warning: str | None = None
+                    try:
+                        self._agent.client.sync_status()
+                    except Exception as _se:
+                        _is_401 = (
+                            hasattr(_se, "response")
+                            and getattr(_se.response, "status_code", 0) == 401  # type: ignore[attr-defined]
+                        )
+                        if _is_401:
+                            with suppress(Exception):
+                                self._agent.update_agent_token(old_token)
+                            _detail = http_response_detail(_se.response) if hasattr(_se, "response") else str(_se)  # type: ignore[attr-defined]
+                            tray_dialogs.show_message(
+                                "Token refuse",
+                                f"Le portail a refuse le token obtenu (401):\n{_detail}",
+                                kind="error",
+                            )
+                            return
+                        # Erreur non-auth : on garde le token mais on avertit.
+                        _sync_warning = str(_se)
 
                     cfg_file = _resolve_agent_config_path()
                     cfg_file.parent.mkdir(parents=True, exist_ok=True)
@@ -554,11 +577,20 @@ class RaguiaTray:
                     except Exception:
                         pass
 
-                    tray_dialogs.show_message(
-                        "Connexion reussie",
-                        "Session agent mise a jour et enregistree avec succes.",
-                        kind="info",
-                    )
+                    if _sync_warning:
+                        tray_dialogs.show_message(
+                            "Connexion enregistree",
+                            "Token sauvegarde. La verification du portail a echoue "
+                            f"(reseau ?) mais le token sera utilise au prochain cycle.\n"
+                            f"Erreur: {_sync_warning[:120]}",
+                            kind="warning",
+                        )
+                    else:
+                        tray_dialogs.show_message(
+                            "Connexion reussie",
+                            "Session agent mise a jour et enregistree avec succes.",
+                            kind="info",
+                        )
                     self._on_agent_status(TrayStatus.IDLE, "Session agent reconnectee")
                 finally:
                     self._end_busy()
@@ -894,6 +926,15 @@ class RaguiaTray:
                                 "Téléchargement terminé. L'agent va redémarrer.",
                                 kind="info",
                             )
+                            # Supprimer le lock PID maintenant, AVANT que le processus
+                            # courant se ferme, afin que la nouvelle instance lancee
+                            # par le script de remplacement ne la confonde pas avec
+                            # une instance encore active et ne quitte pas silencieusement.
+                            try:
+                                pid_file = APP_DATA_DIR / "agent.pid"
+                                pid_file.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                             quit_agent(icon, item)
                         else:
                             tray_dialogs.show_message(

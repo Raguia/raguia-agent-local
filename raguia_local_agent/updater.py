@@ -496,7 +496,10 @@ def _spawn_replace_macos(current_app: Path, pending_app: Path) -> bool:
         f"fi; "
         f"xattr -dr com.apple.quarantine {cur} || true; "
         f"chmod +x {cur}/Contents/MacOS/raguia-agent || true; "
-        f"open {cur}; "
+        # -n force macOS a ouvrir une nouvelle instance meme si l'ancienne
+        # est encore en cours de fermeture (sinon open redirige vers l'existante
+        # qui est en train de mourir, et rien ne demarre).
+        f"open -n {cur} || open {cur}; "
         f"rm -rf {bak} || true"
     )
     try:

@@ -168,13 +168,39 @@ def main() -> None:
             sys.exit(0 if test_connection(cfg) else 1)
 
         if not cfg.agent_token:
+            # Le trousseau OS peut etre temporairement indisponible immediatement
+            # apres un redemarrage post-update (service de trousseau pas encore pret).
+            # On retente quelques fois avec un court delai avant de declarer forfait.
+            if not args.no_tray and not args.test:
+                from raguia_local_agent.secret_store import KEYRING_SENTINEL, load_token
+                try:
+                    import yaml as _yaml
+                    _raw = _yaml.safe_load(cfg.cfg_path.read_text(encoding="utf-8")) if (cfg.cfg_path and cfg.cfg_path.is_file()) else {}
+                    _stored = str((_raw or {}).get("agent_token") or "").strip()
+                    if _stored == KEYRING_SENTINEL:
+                        for _attempt in range(4):
+                            time.sleep(1.5)
+                            _tok = load_token(cfg.cfg_path, KEYRING_SENTINEL)
+                            if _tok:
+                                cfg.agent_token = _tok
+                                logging.info("Token keyring recupere apres %d tentative(s).", _attempt + 1)
+                                break
+                except Exception as _e:
+                    logging.warning("Retry keyring echoue: %s", _e)
+
+        if not cfg.agent_token and args.no_tray:
             logging.error(
-                "Jeton agent manquant. Lancez 'raguia-local-agent' sans argument "
-                "pour ouvrir l'assistant, ou definissez RAGUIA_AGENT_TOKEN."
+                "Jeton agent manquant. Definissez RAGUIA_AGENT_TOKEN ou lancez sans --no-tray."
             )
             sys.exit(1)
 
         agent = SyncAgent(cfg)
+
+        # Si le token est absent (trousseau inaccessible meme apres retry), on demarre
+        # quand meme le tray en mode degrade : l'icone rouge s'affiche et le dialogue
+        # de reconnexion est ouvert automatiquement pour que l'utilisateur puisse
+        # fournir ses identifiants sans avoir a relancer l'application manuellement.
+        _needs_reconnect = not cfg.agent_token
 
         try:
             # --- Mode sans tray (serveur / terminal) ---
@@ -192,6 +218,22 @@ def main() -> None:
             try:
                 from raguia_local_agent.tray import RaguiaTray
                 tray = RaguiaTray(agent, on_quit=agent.stop)
+                if _needs_reconnect:
+                    # Planifie l'ouverture automatique du dialogue de reconnexion
+                    # une fois que le tray est initialise (apres un court delai).
+                    def _auto_reconnect() -> None:
+                        time.sleep(1.5)
+                        try:
+                            from raguia_local_agent import tray_dialogs
+                            tray_dialogs.show_message(
+                                "Reconnexion requise",
+                                "Le jeton d'authentification n'a pas pu etre charge.\n"
+                                "Utilisez « Se connecter / Reconnecter… » dans le menu de l'icone.",
+                                kind="warning",
+                            )
+                        except Exception:
+                            pass
+                    threading.Thread(target=_auto_reconnect, daemon=True).start()
                 tray.run()          # bloque dans le thread principal (requis sur macOS)
             except ImportError:
                 logging.info("pystray/Pillow non disponible — mode sans tray. Ctrl+C pour arreter.")
