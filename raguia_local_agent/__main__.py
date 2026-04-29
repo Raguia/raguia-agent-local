@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +51,17 @@ def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
 
     lock_path.write_text(str(current_pid), encoding="utf-8")
     return True, lock_path
+
+
+def _signal_existing_instance_restore_tray() -> bool:
+    """Demande a l'instance deja lancee de re-afficher l'icone tray."""
+    try:
+        APP_DATA_DIR.mkdir(mode=0o700, exist_ok=True)
+        signal_file = APP_DATA_DIR / "show_tray.signal"
+        signal_file.write_text(str(int(time.time())), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 def test_connection(cfg: AgentConfig) -> bool:
@@ -130,7 +142,10 @@ def main() -> None:
     lock_path: Optional[Path] = None
     lock_ok, lock_path = _acquire_single_instance_lock()
     if not lock_ok:
-        print("Agent deja en cours d'execution (icone tray deja active).")
+        if _signal_existing_instance_restore_tray():
+            print("Agent deja en cours d'execution (demande de re-affichage de l'icone envoyee).")
+        else:
+            print("Agent deja en cours d'execution (icone tray deja active).")
         sys.exit(0)
 
     _cfg_p = cfg.cfg_path
