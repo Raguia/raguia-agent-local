@@ -31,13 +31,17 @@ def _credential_id_candidates(config_path: Path | None) -> list[str]:
         except Exception:
             resolved = expanded
         ids.extend([resolved, expanded, raw])
-    else:
-        # Fallback uniquement si aucun chemin de config connu.
-        try:
-            ids.append(str((Path.home() / ".raguia" / "config.yaml").resolve()))
-        except Exception:
-            ids.append(str(Path.home() / ".raguia" / "config.yaml"))
-        ids.append("default")
+
+    # Compat historique:
+    # - d'anciennes versions pouvaient stocker sous ~/.raguia/config.yaml
+    # - certaines integrations utilisaient "default" (config_path None)
+    # On conserve ces alias meme quand config_path est connu pour eviter
+    # de perdre l'acces au token apres update/migration.
+    try:
+        ids.append(str((Path.home() / ".raguia" / "config.yaml").resolve()))
+    except Exception:
+        ids.append(str(Path.home() / ".raguia" / "config.yaml"))
+    ids.append("default")
 
     dedup: list[str] = []
     seen = set()
@@ -99,10 +103,18 @@ def load_token(config_path: Path | None, stored_value: str) -> str:
         log.warning("Token configure en keyring mais module indisponible.")
         return ""
     try:
+        tested: list[str] = []
         for ident in _credential_id_candidates(config_path):
+            tested.append(ident)
             value = keyring.get_password(KEYRING_SERVICE, ident) or ""
             if value.strip():
+                log.debug("Jeton keyring charge via identifiant '%s'.", ident)
                 return value
+        if tested:
+            log.warning(
+                "Token keyring introuvable pour les identifiants testes (%d).",
+                len(tested),
+            )
         return ""
     except Exception as e:
         log.warning("Impossible de lire le token depuis keyring: %s", e)

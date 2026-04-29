@@ -32,3 +32,15 @@ def test_save_token_falls_back_without_keyring(monkeypatch, tmp_path: Path):
     assert stored == "jwt-456"
     assert secret_store.load_token(cfg, stored) == "jwt-456"
 
+
+def test_load_token_accepts_legacy_default_alias(monkeypatch, tmp_path: Path):
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_get_keyring_module", lambda: fake)
+    cfg = tmp_path / "config.yaml"
+
+    fake.set_password(secret_store.KEYRING_SERVICE, "default", "jwt-legacy")
+    assert (
+        secret_store.load_token(cfg, secret_store.KEYRING_SENTINEL)
+        == "jwt-legacy"
+    )
+
