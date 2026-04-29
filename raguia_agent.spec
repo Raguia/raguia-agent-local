@@ -26,11 +26,23 @@ _VERSION = _ver_match.group(1) if _ver_match else "0.0.0"
 is_win = sys.platform == "win32"
 is_mac = sys.platform == "darwin"
 
+# Assets additionnels a embarquer (format Analysis.datas: (src, dest_dir))
+extra_datas = []
+ASSETS_DIR = AGENT_ROOT / "assets"
+icons_dir = ASSETS_DIR / "icons"
+if ASSETS_DIR.exists():
+    extra_datas += [
+        (str(ASSETS_DIR / "logo_agent-local.png"), "assets"),
+        (str(icons_dir / "raguia-agent.png"), "assets/icons"),
+        (str(icons_dir / "raguia-agent.ico"), "assets/icons"),
+        (str(icons_dir / "raguia-agent.icns"), "assets/icons"),
+    ]
+
 a = Analysis(
     [ENTRY_POINT],
     pathex=[str(AGENT_ROOT)],
     binaries=[],
-    datas=[],
+    datas=extra_datas,
     hiddenimports=[
         # pystray backends
         "pystray._darwin",
@@ -91,23 +103,10 @@ _exe_common = dict(
     icon=None,
 )
 
-# Include the app assets (icons, etc.) in the build
-ASSETS_DIR = AGENT_ROOT / "assets"
-icons_dir = ASSETS_DIR / "icons"
-
 # Collect icon files for each platform (png source copied to .ico/.icns during CI or manually)
 windows_icon = str(icons_dir / "raguia-agent.ico")
 mac_icon = str(icons_dir / "raguia-agent.icns")
 linux_icon = str(icons_dir / "raguia-agent.png")
-
-# Add the assets to the datas so PyInstaller ships them next to the executable/bundle
-if ASSETS_DIR.exists():
-    a.datas += [
-        (str(ASSETS_DIR / "logo_agent-local.png"), str(ASSETS_DIR)),
-        (str(icons_dir / "raguia-agent.png"), str(icons_dir)),
-        (str(icons_dir / "raguia-agent.ico"), str(icons_dir)),
-        (str(icons_dir / "raguia-agent.icns"), str(icons_dir)),
-    ]
 
 if is_win:
     # ------------------------------------------------------------------ Windows
