@@ -150,6 +150,7 @@ class SetupWizard:
         self.root.configure(bg=_BRAND_BG)
         self.root.resizable(False, False)
         self._center(500, 400)
+        self._logo_img_src: tk.PhotoImage | None = None
         self._logo_img: tk.PhotoImage | None = None
 
         self._step = 0
@@ -202,7 +203,7 @@ class SetupWizard:
         style.map("Raguia.TEntry", bordercolor=[("focus", _BRAND_RED)])
 
         # Header
-        hdr = tk.Frame(self.root, bg=_BRAND_RED, height=70)
+        hdr = tk.Frame(self.root, bg=_BRAND_RED, height=88)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
         hdr_inner = tk.Frame(hdr, bg=_BRAND_RED)
@@ -210,11 +211,17 @@ class SetupWizard:
         logo_path = _resolve_asset_path("logo_agent-local.png")
         if logo_path:
             try:
-                self._logo_img = tk.PhotoImage(file=str(logo_path))
-                hdr_logo = self._logo_img.subsample(12, 12)
-                tk.Label(hdr_inner, image=hdr_logo, bg=_BRAND_RED).pack(side="left", pady=10, padx=(0, 10))
+                self._logo_img_src = tk.PhotoImage(file=str(logo_path))
+                img_h = max(1, int(self._logo_img_src.height()))
+                # Evite de rogner le logo dans l'entete (hauteur cible ~52 px).
+                factor = max(1, img_h // 52)
+                hdr_logo = self._logo_img_src.subsample(factor, factor)
+                tk.Label(hdr_inner, image=hdr_logo, bg=_BRAND_RED).pack(
+                    side="left", pady=6, padx=(0, 10)
+                )
                 self._logo_img = hdr_logo
             except Exception:
+                self._logo_img_src = None
                 self._logo_img = None
         tk.Label(
             hdr_inner,

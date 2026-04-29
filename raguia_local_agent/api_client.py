@@ -105,6 +105,47 @@ def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any
             json={"slug": s, "password": p},
             timeout=30.0,
         )
+
+        if r.status_code in (404, 405):
+            # Compat migration: backend non encore mis a jour avec /agent/login.
+            # Fallback: login portail puis issue-token (sans revoke).
+            login_r = _request_with_retry(
+                client,
+                "POST",
+                f"{base}/api/portal/login",
+                json={"slug": s, "password": p},
+                timeout=30.0,
+            )
+            login_r.raise_for_status()
+            login_payload = login_r.json()
+            if not isinstance(login_payload, dict):
+                raise ValueError("Réponse login portail invalide (JSON objet attendu).")
+            portal_access_token = str(login_payload.get("access_token") or "").strip()
+            if not portal_access_token:
+                raise ValueError("Réponse login portail sans access_token.")
+
+            issue_r = _request_with_retry(
+                client,
+                "POST",
+                f"{base}/api/portal/agent/issue-token",
+                headers={"Authorization": f"Bearer {portal_access_token}"},
+                timeout=30.0,
+            )
+            issue_r.raise_for_status()
+            issue_payload = issue_r.json()
+            if not isinstance(issue_payload, dict):
+                raise ValueError("Réponse issue-token invalide (JSON objet attendu).")
+            token = str(issue_payload.get("access_token") or "").strip()
+            if not token:
+                raise ValueError("Réponse issue-token sans access_token.")
+            return {
+                "agent_access_token": token,
+                "token_type": issue_payload.get("token_type", "bearer"),
+                "expires_in_days": issue_payload.get("expires_in_days"),
+                "expires_at": issue_payload.get("expires_at"),
+                "client_slug": s,
+            }
+
     r.raise_for_status()
     payload = r.json()
     if not isinstance(payload, dict):
