@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 # Délai (secondes) accordé au processus courant pour se terminer avant que
 # le shell de remplacement ne tente le move/rename.
-_REPLACE_DELAY_S = 4
+_REPLACE_DELAY_S = 8
 _TRUSTED_DOWNLOAD_HOSTS = {
     # Workflow release GitHub courant
     "github.com",
@@ -475,14 +475,29 @@ def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
 
 
 def _spawn_replace_macos(current_app: Path, pending_app: Path) -> bool:
-    """Spawne bash détaché : attend, supprime l'ancien .app, déplace, ouvre."""
+    """Spawne bash détaché : swap sûr de .app + relance.
+
+    Stratégie défensive:
+    - ne supprime jamais l'app courante avant d'avoir un backup,
+    - restaure le backup si le move du nouveau bundle échoue,
+    - retire le flag de quarantaine sur le bundle final.
+    """
     cur = shlex.quote(str(current_app))
     new = shlex.quote(str(pending_app))
+    bak = shlex.quote(str(current_app.with_suffix(".old.app")))
     bash_cmd = (
-        f"sleep {_REPLACE_DELAY_S} "
-        f"&& rm -rf {cur} "
-        f"&& mv {new} {cur} "
-        f"&& open {cur}"
+        "set -euo pipefail; "
+        f"sleep {_REPLACE_DELAY_S}; "
+        f"rm -rf {bak}; "
+        f'if [ -d {cur} ]; then mv {cur} {bak}; fi; '
+        f'if ! mv {new} {cur}; then '
+        f'  if [ -d {bak} ]; then mv {bak} {cur}; fi; '
+        f"  exit 1; "
+        f"fi; "
+        f"xattr -dr com.apple.quarantine {cur} || true; "
+        f"chmod +x {cur}/Contents/MacOS/raguia-agent || true; "
+        f"open {cur}; "
+        f"rm -rf {bak} || true"
     )
     try:
         subprocess.Popen(
