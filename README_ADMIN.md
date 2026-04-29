@@ -13,7 +13,7 @@ L'agent est distribué sous forme de **binaires natifs compilés par PyInstaller
 | Windows 10/11 x64 | `raguia-agent-windows.exe` | ~60-80 Mo |
 | macOS Apple Silicon (M1/M2/M3) | `raguia-agent-macos-arm64.zip` | ~70-90 Mo |
 
-Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.github/workflows/build-agent-binaries.yml`. Le portail lit les variables `LOCAL_AGENT_DOWNLOAD_URL`, `LOCAL_AGENT_SHA256` et `LOCAL_AGENT_VERSION` pour exposer le lien de téléchargement et permettre les mises à jour automatiques.
+Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.github/workflows/build-agent-binaries.yml`.
 
 ---
 
@@ -55,32 +55,7 @@ L'agent crée automatiquement un LaunchAgent dans `~/Library/LaunchAgents/com.ra
 
 ---
 
-## 3. Mise à jour de l'agent
-
-### 3.1 Mise à jour via le menu tray (recommandée)
-
-L'agent vérifie l'endpoint `/api/portal/agent/version` toutes les 24 heures. Si une nouvelle version est disponible, un avertissement est affiché dans l'icône tray et l'information est visible dans les logs.
-
-Le client (ou vous à distance) fait :
-> Clic droit icône → **Vérifier / installer mise à jour** → Confirmer
-
-L'agent :
-1. Télécharge le nouveau binaire depuis `LOCAL_AGENT_DOWNLOAD_URL`.
-2. Vérifie l'empreinte SHA256.
-3. Spawne un processus shell détaché qui remplace le binaire après l'arrêt de l'agent.
-4. Redémarre automatiquement.
-
-Sécurité téléchargement : HTTPS obligatoire, redirections autorisées uniquement vers des hôtes approuvés (hôte portail, hôtes GitHub release, et éventuels hôtes explicitement autorisés par l'API).
-
-### 3.2 Mise à jour manuelle
-
-Téléchargez la nouvelle version et remplacez manuellement le fichier :
-- Windows : fermez l'agent (menu tray → **Quitter**) puis remplacez `raguia-agent-windows.exe`.
-- macOS : quittez l'agent puis remplacez le `.app` (glisser-déposer depuis le Finder en confirmant le remplacement).
-
-Relancez ensuite l'agent normalement.
-
-### 3.3 Publication d'une release (côté vous)
+## 3. Publication d'une release (côté vous)
 
 ```bash
 # Tagger la release (déclenche le build CI automatiquement)
@@ -88,15 +63,8 @@ git tag v0.3.0
 git push origin v0.3.0
 ```
 
-Le CI produit les artefacts et crée une GitHub Release. Mettez à jour dans votre `.env` :
-
-```bash
-LOCAL_AGENT_VERSION=0.3.0
-LOCAL_AGENT_DOWNLOAD_URL=https://github.com/ValMtp3/raguia-agent-local/releases/download/v0.3.0/raguia-agent-windows.exe
-LOCAL_AGENT_SHA256=<valeur du fichier .sha256>
-```
-
-Répétez pour macOS si vous gérez les deux plateformes (deux paires URL/SHA256, une par OS — à discriminer côté portail si nécessaire).
+Le CI produit les artefacts et crée une GitHub Release.  
+L'agent compare sa version locale (`X.Y.Z`) au dernier tag release (`vX.Y.Z`) et télécharge le binaire + son `.sha256` depuis GitHub.
 
 ---
 
@@ -218,7 +186,7 @@ Les logs bruts se trouvent dans `~/.raguia/agent.log` (et `agent.log.1`, `agent.
 L'agent refuse toute mise à jour si :
 1. L'URL de téléchargement n'est pas en **HTTPS**.
 2. La chaîne de redirection contient un hôte non approuvé.
-3. L'empreinte **SHA256** du binaire téléchargé ne correspond pas à celle annoncée par le portail.
+3. L'empreinte **SHA256** du binaire téléchargé ne correspond pas à celle du fichier `.sha256` de la release GitHub.
 
 ---
 

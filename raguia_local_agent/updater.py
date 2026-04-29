@@ -38,6 +38,8 @@ _TRUSTED_DOWNLOAD_HOSTS = {
     "release-assets.githubusercontent.com",
     "github-releases.githubusercontent.com",
 }
+_DEFAULT_GITHUB_REPO = "ValMtp3/raguia-agent-local"
+_GITHUB_API_BASE = "https://api.github.com"
 
 
 def _pending_path(suffix: str) -> Path:
@@ -79,6 +81,35 @@ def _extract_allowed_hosts(update_info: dict, api_host: str) -> set[str]:
     return allowed
 
 
+def _normalize_version(value: str) -> str:
+    v = str(value or "").strip()
+    if v.lower().startswith("v"):
+        return v[1:].strip()
+    return v
+
+
+def _semver_tuple(value: str) -> tuple[int, int, int] | None:
+    v = _normalize_version(value)
+    if not v:
+        return None
+    core = v.split("+", 1)[0].split("-", 1)[0]
+    parts = core.split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    nums = [int(p) for p in parts[:3]]
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
+
+
+def _parse_sha256_text(text: str) -> str:
+    for token in (text or "").replace("\n", " ").split():
+        t = token.strip().lower()
+        if len(t) == 64 and all(c in "0123456789abcdef" for c in t):
+            return t
+    return ""
+
+
 def _validate_download_chain_https_and_hosts(
     responses: list[httpx.Response], allowed_hosts: set[str]
 ) -> bool:
@@ -112,28 +143,155 @@ class AgentUpdater:
         self.client = client
         self.current_version = current_version
 
+    def _github_repo(self) -> str:
+        return (os.environ.get("RAGUIA_GITHUB_REPO") or _DEFAULT_GITHUB_REPO).strip()
+
+    def latest_github_release(self) -> dict:
+        """Retourne les infos de la dernière release GitHub (latest)."""
+        repo = self._github_repo()
+        url = f"{_GITHUB_API_BASE}/repos/{repo}/releases/latest"
+        r = httpx.get(
+            url,
+            timeout=20.0,
+            trust_env=False,
+            headers={"Accept": "application/vnd.github+json"},
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        payload = r.json() or {}
+        if not isinstance(payload, dict):
+            raise ValueError("Reponse GitHub invalide (objet attendu).")
+
+        tag = str(payload.get("tag_name") or "").strip()
+        version = _normalize_version(tag)
+        assets = payload.get("assets") or []
+        if not isinstance(assets, list):
+            assets = []
+        if not version:
+            raise ValueError("Tag GitHub latest introuvable.")
+        return {"version": version, "tag_name": tag, "assets": assets}
+
+    def latest_github_version(self) -> str:
+        return str(self.latest_github_release().get("version") or "").strip()
+
+    @staticmethod
+    def compare_versions(local_version: str, remote_version: str) -> int | None:
+        """Compare deux versions semver.
+
+        Retour:
+          -1 si remote > local
+           0 si egales
+           1 si local > remote
+        None si non comparable.
+        """
+        local_t = _semver_tuple(local_version)
+        remote_t = _semver_tuple(remote_version)
+        if local_t is None or remote_t is None:
+            return None
+        if remote_t > local_t:
+            return -1
+        if remote_t < local_t:
+            return 1
+        return 0
+
+    def build_update_info_from_release(self, release: dict) -> dict:
+        """Construit update_info compatible perform_update() à partir d'une release GitHub."""
+        assets = release.get("assets") or []
+        if not isinstance(assets, list):
+            assets = []
+
+        def _asset_name(a: dict) -> str:
+            return str(a.get("name") or "").strip().lower()
+
+        binary_asset: dict | None = None
+        if sys.platform == "win32":
+            binary_asset = next(
+                (a for a in assets if _asset_name(a).endswith(".exe") and "windows" in _asset_name(a)),
+                None,
+            ) or next((a for a in assets if _asset_name(a).endswith(".exe")), None)
+        elif sys.platform == "darwin":
+            binary_asset = next(
+                (a for a in assets if _asset_name(a).endswith(".zip") and "macos" in _asset_name(a)),
+                None,
+            ) or next((a for a in assets if _asset_name(a).endswith(".zip")), None)
+        else:
+            binary_asset = next(
+                (a for a in assets if _asset_name(a).endswith((".bin", ".appimage", ".tar.gz"))),
+                None,
+            )
+
+        if not binary_asset:
+            raise ValueError("Aucun binaire compatible trouve dans la derniere release GitHub.")
+
+        download_url = str(binary_asset.get("browser_download_url") or "").strip()
+        if not download_url:
+            raise ValueError("URL de telechargement GitHub manquante pour le binaire.")
+
+        bin_name = str(binary_asset.get("name") or "").strip()
+        sha_asset = next(
+            (
+                a
+                for a in assets
+                if _asset_name(a).endswith(".sha256")
+                and (
+                    _asset_name(a).startswith(bin_name.lower())
+                    or bin_name.lower() in _asset_name(a)
+                )
+            ),
+            None,
+        ) or next((a for a in assets if _asset_name(a).endswith(".sha256")), None)
+
+        if not sha_asset:
+            raise ValueError("Fichier SHA256 introuvable dans la release GitHub.")
+
+        sha_url = str(sha_asset.get("browser_download_url") or "").strip()
+        if not sha_url:
+            raise ValueError("URL du fichier SHA256 manquante.")
+
+        r = httpx.get(sha_url, timeout=20.0, trust_env=False, follow_redirects=True)
+        r.raise_for_status()
+        sha256 = _parse_sha256_text(r.text or "")
+        if not sha256:
+            raise ValueError("Impossible de lire le hash SHA256 depuis l'asset .sha256.")
+
+        return {
+            "version": str(release.get("version") or "").strip(),
+            "download_url": download_url,
+            "sha256": sha256,
+            "allowed_download_hosts": list(_TRUSTED_DOWNLOAD_HOSTS),
+        }
+
     # ------------------------------------------------------------------
     # Vérification (commune aux deux modes)
     # ------------------------------------------------------------------
 
     def check_and_log(self, current_version: str) -> bool:
-        """Interroge /api/portal/agent/version et logue si une MAJ est dispo.
+        """Interroge la dernière release GitHub et logue si une MAJ est dispo.
 
         Retourne True si une mise à jour est disponible.
         """
         try:
-            data = self.client.agent_version_info()
-            latest_raw = data.get("version")
-            latest = str(latest_raw).strip() if latest_raw else ""
+            latest = self.latest_github_version()
             if not latest:
                 return False
-            if latest != str(current_version).strip():
+            cmp = self.compare_versions(current_version, latest)
+            if cmp == -1:
                 log.info(
                     "Mise a jour disponible : %s -> %s. "
                     "Menu icone : Verifier / installer mise a jour.",
                     current_version,
                     latest,
                 )
+                return True
+            if cmp == 1:
+                log.info(
+                    "Version locale plus recente que GitHub latest : %s > %s",
+                    current_version,
+                    latest,
+                )
+                return False
+            if cmp is None and latest != _normalize_version(str(current_version).strip()):
+                # Fallback non-semver: rester permissif (ancienne logique).
                 return True
         except Exception as e:
             log.debug("Verification mise a jour echouee : %s", e)

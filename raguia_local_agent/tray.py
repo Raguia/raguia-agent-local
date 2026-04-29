@@ -795,13 +795,13 @@ class RaguiaTray:
                 self._begin_busy("Recherche de mise a jour...")
 
                 try:
-                    # --- Récupérer les infos de version depuis le portail ---
+                    # --- Récupérer la dernière version depuis GitHub releases ---
                     try:
-                        data = self._agent.updater.client.agent_version_info()
+                        data = self._agent.updater.latest_github_release()
                     except Exception as e:
                         tray_dialogs.show_message(
                             "Mise à jour — erreur",
-                            f"Impossible de contacter le portail :\n{e}",
+                            f"Impossible de recuperer la derniere release GitHub :\n{e}",
                             kind="error",
                         )
                         return
@@ -822,10 +822,21 @@ class RaguiaTray:
                                 kind="warning",
                             )
                             return
-                        if current_version_known and latest_version == current_version:
+                        cmp = self._agent.updater.compare_versions(current_version, latest_version)
+                        if current_version_known and cmp == 0:
                             tray_dialogs.show_message(
                                 "Mise à jour",
                                 f"L'agent est à jour (version {current_version}).",
+                                kind="info",
+                            )
+                            return
+                        if current_version_known and cmp == 1:
+                            tray_dialogs.show_message(
+                                "Mise à jour",
+                                (
+                                    f"La version locale ({current_label}) est plus recente que "
+                                    f"la derniere release GitHub ({latest_version})."
+                                ),
                                 kind="info",
                             )
                             return
@@ -852,10 +863,20 @@ class RaguiaTray:
                             )
                             return
 
+                        try:
+                            update_info = self._agent.updater.build_update_info_from_release(data)
+                        except Exception as e:
+                            tray_dialogs.show_message(
+                                "Mise à jour — erreur",
+                                f"Impossible de preparer le telechargement depuis GitHub :\n{e}",
+                                kind="error",
+                            )
+                            return
+
                         self._set_busy_message(
                             f"Installation de la mise a jour {latest_version}..."
                         )
-                        ok = self._agent.updater.perform_update(data)
+                        ok = self._agent.updater.perform_update(update_info)
                         if ok:
                             tray_dialogs.show_message(
                                 "Mise à jour",
@@ -878,11 +899,13 @@ class RaguiaTray:
 
                     info_parts: list[str] = []
                     if latest_version:
-                        info_parts.append(f"Version annoncée par le serveur : {latest_version}")
+                        info_parts.append(f"Version annoncée par GitHub : {latest_version}")
                     info_parts.append(f"Version du paquet actuel : {current_label}")
                     info_block = "\n".join(info_parts)
 
-                    if latest_version and (not current_version_known or latest_version != current_version):
+                    cmp = self._agent.updater.compare_versions(current_version, latest_version)
+                    has_update = bool(latest_version and (cmp == -1 or (cmp is None and latest_version != current_version)))
+                    if has_update:
                         self._set_busy_message(
                             f"Mise a jour detectee ({current_label} -> {latest_version})"
                         )
@@ -890,13 +913,31 @@ class RaguiaTray:
                             "Mise a jour detectee",
                             (
                                 "Le serveur annonce une nouvelle version.\n"
+                                # Source de verite: latest release GitHub
                                 f"Version actuelle : {current_label}\n"
                                 f"Nouvelle version : {latest_version}"
                             ),
                             kind="info",
                         )
                     else:
-                        self._set_busy_message("Verification terminee, preparation de la MAJ locale...")
+                        self._set_busy_message("Aucune mise a jour plus recente detectee.")
+                        if latest_version and cmp == 1:
+                            tray_dialogs.show_message(
+                                "Mise à jour",
+                                (
+                                    f"La version locale ({current_label}) est plus recente que "
+                                    f"la derniere release GitHub ({latest_version})."
+                                ),
+                                kind="info",
+                            )
+                            return
+                        if latest_version and cmp == 0:
+                            tray_dialogs.show_message(
+                                "Mise à jour",
+                                f"L'agent est à jour (version {current_label}).",
+                                kind="info",
+                            )
+                            return
 
                     if not tray_dialogs.confirm_git_pull_update(current_version, info_block):
                         tray_dialogs.show_message(
