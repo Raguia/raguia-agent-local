@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 
 from . import tray_dialogs
 from .api_client import validate_api_base
-from .config import APP_DATA_DIR
 from .doctor import run_doctor
 from .logging_utils import export_support_bundle
 from .secret_store import save_token
@@ -289,13 +288,6 @@ class RaguiaTray:
         self._sync_anim_stop = threading.Event()
         self._sync_anim_thread: threading.Thread | None = None
         self._sync_anim_phase = 0
-        self._signal_watch_stop = threading.Event()
-        self._signal_watch_thread: threading.Thread | None = None
-        self._show_tray_signal_file = APP_DATA_DIR / "show_tray.signal"
-        self._status_lock = threading.Lock()
-        self._busy_depth = 0
-        self._status_before_busy = TrayStatus.IDLE
-        self._message_before_busy = ""
 
         # Pre-generer les icones statiques
         for name in _COLORS.keys():
@@ -311,53 +303,9 @@ class RaguiaTray:
     # Callback depuis sync_agent (thread background -> thread tray)
     # ------------------------------------------------------------------
     def _on_agent_status(self, status: TrayStatus, message: str = "") -> None:
-        with self._status_lock:
-            if self._busy_depth > 0:
-                self._status_before_busy = status
-                self._message_before_busy = message
-                return
-            self._status = status
-            self._message = message
+        self._status = status
+        self._message = message
         self._refresh()
-
-    def _begin_busy(self, message: str = "") -> None:
-        should_refresh = False
-        with self._status_lock:
-            self._busy_depth += 1
-            if self._busy_depth == 1:
-                self._status_before_busy = self._status
-                self._message_before_busy = self._message
-                self._status = TrayStatus.SYNCING
-                self._message = message
-                should_refresh = True
-            elif message and self._status == TrayStatus.SYNCING:
-                self._message = message
-                should_refresh = True
-        if should_refresh:
-            self._refresh()
-
-    def _end_busy(self) -> None:
-        should_refresh = False
-        with self._status_lock:
-            if self._busy_depth == 0:
-                return
-            self._busy_depth -= 1
-            if self._busy_depth == 0:
-                self._status = self._status_before_busy
-                self._message = self._message_before_busy
-                should_refresh = True
-        if should_refresh:
-            self._refresh()
-
-    def _set_busy_message(self, message: str) -> None:
-        should_refresh = False
-        with self._status_lock:
-            if self._busy_depth <= 0 or self._status != TrayStatus.SYNCING:
-                return
-            self._message = message
-            should_refresh = True
-        if should_refresh:
-            self._refresh()
 
     def _refresh(self) -> None:
         if self._tray is None:
@@ -394,40 +342,6 @@ class RaguiaTray:
 
     def _stop_sync_animator(self) -> None:
         self._sync_anim_stop.set()
-
-    def _start_signal_watcher(self) -> None:
-        if self._signal_watch_thread and self._signal_watch_thread.is_alive():
-            return
-        self._signal_watch_stop.clear()
-
-        def _loop() -> None:
-            while not self._signal_watch_stop.wait(0.8):
-                try:
-                    if not self._show_tray_signal_file.exists():
-                        continue
-                    self._show_tray_signal_file.unlink(missing_ok=True)
-                    self._restore_tray_icon()
-                except Exception:
-                    pass
-
-        self._signal_watch_thread = threading.Thread(
-            target=_loop, daemon=True, name="raguia-tray-signal-watch"
-        )
-        self._signal_watch_thread.start()
-
-    def _stop_signal_watcher(self) -> None:
-        self._signal_watch_stop.set()
-
-    def _restore_tray_icon(self) -> None:
-        if self._tray is None:
-            return
-        try:
-            # pystray expose "visible" sur la plupart des backends.
-            if hasattr(self._tray, "visible"):
-                self._tray.visible = True
-        except Exception:
-            pass
-        self._refresh()
 
     # ------------------------------------------------------------------
     # Menu
@@ -486,73 +400,54 @@ class RaguiaTray:
                 import yaml
             except Exception:
                 self._on_agent_status(TrayStatus.ERROR, "PyYAML indisponible")
+                return
+
+            new_token = tray_dialogs.prompt_agent_token()
+            if new_token is None:
+                return
+            new_token = new_token.strip()
+            if not new_token:
                 tray_dialogs.show_message(
-                    "Mise a jour JWT impossible",
-                    "Le module PyYAML est indisponible.",
+                    "Jeton vide",
+                    "Aucun jeton saisi.",
+                    kind="warning",
+                )
+                return
+
+            old_token = self._agent.cfg.agent_token
+            self._agent.update_agent_token(new_token)
+            try:
+                self._agent.client.sync_status()
+            except Exception as e:
+                self._agent.update_agent_token(old_token)
+                tray_dialogs.show_message(
+                    "Jeton invalide",
+                    f"Le jeton n'a pas ete accepte:\n{e}",
                     kind="error",
                 )
                 return
 
-            def work() -> None:
-                self._begin_busy("Mise a jour du jeton JWT...")
-                try:
-                    self._set_busy_message("Ouverture de la fenetre de saisie JWT...")
-                    new_token = tray_dialogs.prompt_agent_token()
-                    if new_token is None:
-                        tray_dialogs.show_message(
-                            "Mise a jour JWT annulee",
-                            "Aucun nouveau jeton n'a ete saisi.",
-                            kind="info",
-                        )
-                        return
-                    new_token = new_token.strip()
-                    if not new_token:
-                        tray_dialogs.show_message(
-                            "Jeton vide",
-                            "Aucun jeton saisi.",
-                            kind="warning",
-                        )
-                        return
+            cfg_file = _resolve_agent_config_path()
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
 
-                    old_token = self._agent.cfg.agent_token
-                    self._agent.update_agent_token(new_token)
-                    self._set_busy_message("Verification du nouveau jeton...")
-                    try:
-                        self._agent.client.sync_status()
-                    except Exception as e:
-                        self._agent.update_agent_token(old_token)
-                        tray_dialogs.show_message(
-                            "Jeton invalide",
-                            f"Le jeton n'a pas ete accepte:\n{e}",
-                            kind="error",
-                        )
-                        return
+            data = {}
+            if cfg_file.is_file():
+                with open(cfg_file, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+            data["agent_token"] = save_token(cfg_file, new_token)
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+            try:
+                os.chmod(cfg_file, 0o600)
+            except Exception:
+                pass
 
-                    cfg_file = _resolve_agent_config_path()
-                    cfg_file.parent.mkdir(parents=True, exist_ok=True)
-
-                    data = {}
-                    if cfg_file.is_file():
-                        with open(cfg_file, encoding="utf-8") as f:
-                            data = yaml.safe_load(f) or {}
-                    data["agent_token"] = save_token(cfg_file, new_token)
-                    with open(cfg_file, "w", encoding="utf-8") as f:
-                        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-                    try:
-                        os.chmod(cfg_file, 0o600)
-                    except Exception:
-                        pass
-
-                    tray_dialogs.show_message(
-                        "Jeton mis a jour",
-                        "Le nouveau jeton est actif immediatement et enregistre.",
-                        kind="info",
-                    )
-                    self._on_agent_status(TrayStatus.IDLE, "Jeton mis a jour")
-                finally:
-                    self._end_busy()
-
-            threading.Thread(target=work, daemon=True).start()
+            tray_dialogs.show_message(
+                "Jeton mis a jour",
+                "Le nouveau jeton est actif immediatement et enregistre.",
+                kind="info",
+            )
+            self._on_agent_status(TrayStatus.IDLE, "Jeton mis a jour")
 
         def switch_environment(icon, item):
             if not admin_switch_cfg:
@@ -637,7 +532,6 @@ class RaguiaTray:
             if not tray_dialogs.confirm_uninstall():
                 return
 
-            self._begin_busy("Desinstallation en cours...")
             try:
                 cfg_path = os.environ.get("RAGUIA_AGENT_CONFIG")
                 cfg_file = Path(cfg_path) if cfg_path else (Path.home() / ".raguia" / "config.yaml")
@@ -735,28 +629,19 @@ class RaguiaTray:
                     f"La desinstallation a echoue:\n{e}",
                     kind="error",
                 )
-            finally:
-                self._end_busy()
 
         def run_doctor_ui(icon, item):
-            def work() -> None:
-                self._begin_busy("Diagnostic en cours...")
-                try:
-                    self._set_busy_message("Execution des verifications Doctor...")
-                    ok, report = run_doctor(self._agent.cfg, self._agent)
-                    title = "Diagnostic OK" if ok else "Diagnostic - attention"
-                    kind = "info" if ok else "warning"
-                    tray_dialogs.show_message(title, report, kind=kind)
-                except Exception as e:
-                    tray_dialogs.show_message(
-                        "Diagnostic indisponible",
-                        f"Le diagnostic n'a pas pu etre execute:\n{e}",
-                        kind="error",
-                    )
-                finally:
-                    self._end_busy()
-
-            threading.Thread(target=work, daemon=True).start()
+            try:
+                ok, report = run_doctor(self._agent.cfg, self._agent)
+                title = "Diagnostic OK" if ok else "Diagnostic - attention"
+                kind = "info" if ok else "warning"
+                tray_dialogs.show_message(title, report, kind=kind)
+            except Exception:
+                tray_dialogs.show_message(
+                    "Diagnostic indisponible",
+                    "Le diagnostic n'a pas pu etre execute.",
+                    kind="error",
+                )
 
         def export_support(icon, item):
             try:
@@ -790,119 +675,73 @@ class RaguiaTray:
                 from . import __version__
 
                 current_version = __version__.strip()
-                self._begin_busy("Recherche de mise a jour...")
 
+                # --- Récupérer les infos de version depuis le portail ---
                 try:
-                    # --- Récupérer les infos de version depuis le portail ---
-                    try:
-                        data = self._agent.updater.client.agent_version_info()
-                    except Exception as e:
+                    data = self._agent.updater.client.agent_version_info()
+                except Exception as e:
+                    tray_dialogs.show_message(
+                        "Mise à jour — erreur",
+                        f"Impossible de contacter le portail :\n{e}",
+                        kind="error",
+                    )
+                    return
+
+                latest_version = str(data.get("version") or "").strip()
+
+                # ----------------------------------------------------------------
+                # Mode binaire gelé (PyInstaller, distribution client)
+                # ----------------------------------------------------------------
+                if getattr(sys, "frozen", False):
+                    if not latest_version or latest_version == current_version:
+                        tray_dialogs.show_message(
+                            "Mise à jour",
+                            f"L'agent est à jour (version {current_version}).",
+                            kind="info",
+                        )
+                        return
+
+                    if not tray_dialogs.confirm_agent_update(
+                        current_version, latest_version
+                    ):
+                        return
+
+                    ok = self._agent.updater.perform_update(data)
+                    if ok:
+                        tray_dialogs.show_message(
+                            "Mise à jour",
+                            "Téléchargement terminé. L'agent va redémarrer.",
+                            kind="info",
+                        )
+                        quit_agent(icon, item)
+                    else:
                         tray_dialogs.show_message(
                             "Mise à jour — erreur",
-                            f"Impossible de contacter le portail :\n{e}",
+                            "La mise à jour a échoué. Consultez les logs pour le détail.",
                             kind="error",
                         )
-                        return
+                    return
 
-                    latest_version = str(data.get("version") or "").strip()
+                # ----------------------------------------------------------------
+                # Mode source Python (développement) : git pull + pip install
+                # ----------------------------------------------------------------
+                from .local_git_update import run_local_git_update
 
-                    # ----------------------------------------------------------------
-                    # Mode binaire gelé (PyInstaller, distribution client)
-                    # ----------------------------------------------------------------
-                    if getattr(sys, "frozen", False):
-                        if not latest_version or latest_version == current_version:
-                            tray_dialogs.show_message(
-                                "Mise à jour",
-                                f"L'agent est à jour (version {current_version}).",
-                                kind="info",
-                            )
-                            return
+                info_parts: list[str] = []
+                if latest_version:
+                    info_parts.append(f"Version annoncée par le serveur : {latest_version}")
+                info_parts.append(f"Version du paquet actuel : {current_version}")
+                info_block = "\n".join(info_parts)
 
-                        self._set_busy_message(
-                            f"Mise a jour detectee ({current_version} -> {latest_version})"
-                        )
-                        tray_dialogs.show_message(
-                            "Mise a jour detectee",
-                            (
-                                "Nouvelle version disponible.\n"
-                                f"Version actuelle : {current_version}\n"
-                                f"Nouvelle version : {latest_version}"
-                            ),
-                            kind="info",
-                        )
-                        if not tray_dialogs.confirm_agent_update(
-                            current_version, latest_version
-                        ):
-                            tray_dialogs.show_message(
-                                "Mise a jour annulee",
-                                "Aucune modification n'a ete appliquee.",
-                                kind="info",
-                            )
-                            return
+                if not tray_dialogs.confirm_git_pull_update(current_version, info_block):
+                    return
 
-                        self._set_busy_message(
-                            f"Installation de la mise a jour {latest_version}..."
-                        )
-                        ok = self._agent.updater.perform_update(data)
-                        if ok:
-                            tray_dialogs.show_message(
-                                "Mise à jour",
-                                "Téléchargement terminé. L'agent va redémarrer.",
-                                kind="info",
-                            )
-                            quit_agent(icon, item)
-                        else:
-                            tray_dialogs.show_message(
-                                "Mise à jour — erreur",
-                                "La mise à jour a échoué. Consultez les logs pour le détail.",
-                                kind="error",
-                            )
-                        return
-
-                    # ----------------------------------------------------------------
-                    # Mode source Python (développement) : git pull + pip install
-                    # ----------------------------------------------------------------
-                    from .local_git_update import run_local_git_update
-
-                    info_parts: list[str] = []
-                    if latest_version:
-                        info_parts.append(f"Version annoncée par le serveur : {latest_version}")
-                    info_parts.append(f"Version du paquet actuel : {current_version}")
-                    info_block = "\n".join(info_parts)
-
-                    if latest_version and latest_version != current_version:
-                        self._set_busy_message(
-                            f"Mise a jour detectee ({current_version} -> {latest_version})"
-                        )
-                        tray_dialogs.show_message(
-                            "Mise a jour detectee",
-                            (
-                                "Le serveur annonce une nouvelle version.\n"
-                                f"Version actuelle : {current_version}\n"
-                                f"Nouvelle version : {latest_version}"
-                            ),
-                            kind="info",
-                        )
-                    else:
-                        self._set_busy_message("Verification terminee, preparation de la MAJ locale...")
-
-                    if not tray_dialogs.confirm_git_pull_update(current_version, info_block):
-                        tray_dialogs.show_message(
-                            "Mise a jour annulee",
-                            "La mise a jour locale a ete annulee.",
-                            kind="info",
-                        )
-                        return
-
-                    self._set_busy_message("Execution de la mise a jour locale...")
-                    ok, msg = run_local_git_update()
-                    tray_dialogs.show_message(
-                        "Mise à jour",
-                        msg,
-                        kind="info" if ok else "error",
-                    )
-                finally:
-                    self._end_busy()
+                ok, msg = run_local_git_update()
+                tray_dialogs.show_message(
+                    "Mise à jour",
+                    msg,
+                    kind="info" if ok else "error",
+                )
 
             threading.Thread(target=work, daemon=True).start()
 
@@ -972,9 +811,7 @@ class RaguiaTray:
             menu=pystray.Menu(lambda: self._menu()._items),
         )
         self._tray = icon
-        self._start_signal_watcher()
         try:
             icon.run()
         finally:
             self._stop_sync_animator()
-            self._stop_signal_watcher()
