@@ -36,6 +36,7 @@ jobs:
         run: pyinstaller raguia_agent.spec --noconfirm
 
       - name: Package Windows artifacts
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -86,6 +87,7 @@ jobs:
         run: pyinstaller raguia_agent.spec --noconfirm
 
       - name: Package macOS artifacts
+        shell: bash
         run: |
           ditto -c -k --sequesterRsrc --keepParent "dist/raguia-agent.app" "raguia-agent-macos-arm64.zip"
           python - <<'PY'
