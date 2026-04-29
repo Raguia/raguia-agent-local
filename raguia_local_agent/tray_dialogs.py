@@ -245,25 +245,93 @@ def prompt_agent_token() -> str | None:
 
 def prompt_portal_login() -> tuple[str, str] | None:
     """Demande slug + mot de passe portail. Retourne ``None`` si annulation."""
-    slug = prompt_text(
-        "Raguia — Connexion portail",
-        "Slug client (ex: entreprise-demo) :",
-        masked=False,
-    )
-    if slug is None:
+    out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    out_path.close()
+    path = out_path.name
+    try:
+        # Formulaire explicite (2 champs) pour éviter les dialogues ambigus
+        # selon les backends UI (notamment macOS/AppKit + pystray).
+        script = (
+            "import tkinter as tk\n"
+            "root = tk.Tk()\n"
+            "root.title('Raguia — Connexion portail')\n"
+            "root.resizable(False, False)\n"
+            "try:\n"
+            "    root.lift()\n"
+            "    root.attributes('-topmost', True)\n"
+            "    root.update_idletasks()\n"
+            "except Exception:\n"
+            "    pass\n"
+            "root.configure(padx=14, pady=12)\n"
+            "tk.Label(root, text='Slug client (ex: entreprise-demo) :').grid(row=0, column=0, sticky='w')\n"
+            "slug_entry = tk.Entry(root, width=44)\n"
+            "slug_entry.grid(row=1, column=0, sticky='we', pady=(2, 10))\n"
+            "tk.Label(root, text='Mot de passe portail :').grid(row=2, column=0, sticky='w')\n"
+            "pwd_entry = tk.Entry(root, width=44, show='*')\n"
+            "pwd_entry.grid(row=3, column=0, sticky='we', pady=(2, 12))\n"
+            "result = {'ok': False, 'slug': '', 'pwd': ''}\n"
+            "def submit():\n"
+            "    result['slug'] = slug_entry.get().strip().lower()\n"
+            "    result['pwd'] = pwd_entry.get().strip()\n"
+            "    if not result['slug'] or not result['pwd']:\n"
+            "        return\n"
+            "    result['ok'] = True\n"
+            "    root.destroy()\n"
+            "def cancel():\n"
+            "    root.destroy()\n"
+            "btns = tk.Frame(root)\n"
+            "btns.grid(row=4, column=0, sticky='e')\n"
+            "tk.Button(btns, text='Annuler', command=cancel).pack(side='right')\n"
+            "tk.Button(btns, text='Valider', command=submit).pack(side='right', padx=(0, 8))\n"
+            "root.bind('<Return>', lambda e: submit())\n"
+            "root.bind('<Escape>', lambda e: cancel())\n"
+            "slug_entry.focus_set()\n"
+            "root.mainloop()\n"
+            f"with open({path!r}, 'w', encoding='utf-8') as f:\n"
+            "    if result['ok']:\n"
+            "        f.write('__OK__\\n' + result['slug'] + '\\n' + result['pwd'])\n"
+            "    else:\n"
+            "        f.write('__CANCEL__\\n')\n"
+        )
+        r = _run_tk_subprocess(script)
+        if r.returncode == 0:
+            raw = Path(path).read_text(encoding='utf-8').splitlines()
+            if raw and raw[0].strip() == "__CANCEL__":
+                return None
+            if len(raw) >= 3 and raw[0].strip() == "__OK__":
+                slug = raw[1].strip().lower()
+                password = raw[2].strip()
+                if slug and password:
+                    return slug, password
+
+        # Fallback cross-platform (ancien comportement en 2 prompts)
+        slug = prompt_text(
+            "Raguia — Connexion portail",
+            "Slug client (ex: entreprise-demo) :",
+            masked=False,
+        )
+        if slug is None:
+            return None
+        password = prompt_text(
+            "Raguia — Connexion portail",
+            "Mot de passe portail :",
+            masked=True,
+        )
+        if password is None:
+            return None
+        slug = slug.strip().lower()
+        password = password.strip()
+        if not slug or not password:
+            return None
+        return slug, password
+    except Exception as e:
+        log.exception("prompt_portal_login: %s", e)
         return None
-    password = prompt_text(
-        "Raguia — Connexion portail",
-        "Mot de passe portail :",
-        masked=True,
-    )
-    if password is None:
-        return None
-    slug = slug.strip().lower()
-    password = password.strip()
-    if not slug or not password:
-        return None
-    return slug, password
+    finally:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:

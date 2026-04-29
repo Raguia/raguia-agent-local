@@ -541,6 +541,10 @@ class RaguiaTray:
                     if cfg_file.is_file():
                         with open(cfg_file, encoding="utf-8") as f:
                             data = yaml.safe_load(f) or {}
+                    # Conserver une config complete meme si le fichier n'existe plus.
+                    data.setdefault("api_base", self._agent.cfg.api_base)
+                    data.setdefault("watch_parent", self._agent.cfg.watch_parent)
+                    data.setdefault("root_folder_name", self._agent.cfg.root_folder_name)
                     data["client_slug"] = slug
                     data["agent_token"] = save_token(cfg_file, new_token)
                     with open(cfg_file, "w", encoding="utf-8") as f:
