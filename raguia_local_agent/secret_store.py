@@ -20,6 +20,32 @@ def _credential_id(config_path: Path | None) -> str:
         return str(config_path)
 
 
+def _credential_id_candidates(config_path: Path | None) -> list[str]:
+    """IDs possibles (compat anciennes versions / chemins variants)."""
+    ids: list[str] = []
+    if config_path is not None:
+        raw = str(config_path)
+        expanded = str(config_path.expanduser())
+        try:
+            resolved = str(config_path.expanduser().resolve())
+        except Exception:
+            resolved = expanded
+        ids.extend([resolved, expanded, raw])
+    # Compat historique + fallback robuste si chemin de config a changé.
+    ids.append(str((Path.home() / ".raguia" / "config.yaml").resolve()))
+    ids.append("default")
+
+    dedup: list[str] = []
+    seen = set()
+    for ident in ids:
+        key = (ident or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        dedup.append(key)
+    return dedup
+
+
 def _get_keyring_module():
     try:
         import keyring  # type: ignore
@@ -47,7 +73,9 @@ def save_token(config_path: Path | None, token: str) -> str:
     if keyring is None:
         return token
     try:
-        keyring.set_password(KEYRING_SERVICE, _credential_id(config_path), token)
+        # Ecrit aussi les alias "legacy" pour survivre aux variations de chemin/config.
+        for ident in _credential_id_candidates(config_path):
+            keyring.set_password(KEYRING_SERVICE, ident, token)
         return KEYRING_SENTINEL
     except Exception as e:
         log.warning("keyring set_password indisponible, fallback YAML: %s", e)
@@ -67,7 +95,11 @@ def load_token(config_path: Path | None, stored_value: str) -> str:
         log.warning("Token configure en keyring mais module indisponible.")
         return ""
     try:
-        return keyring.get_password(KEYRING_SERVICE, _credential_id(config_path)) or ""
+        for ident in _credential_id_candidates(config_path):
+            value = keyring.get_password(KEYRING_SERVICE, ident) or ""
+            if value.strip():
+                return value
+        return ""
     except Exception as e:
         log.warning("Impossible de lire le token depuis keyring: %s", e)
         return ""

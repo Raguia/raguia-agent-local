@@ -790,6 +790,8 @@ class RaguiaTray:
                 from . import __version__
 
                 current_version = __version__.strip()
+                current_version_known = bool(current_version and current_version != "0.0.0")
+                current_label = current_version if current_version_known else "inconnue"
                 self._begin_busy("Recherche de mise a jour...")
 
                 try:
@@ -810,7 +812,17 @@ class RaguiaTray:
                     # Mode binaire gelé (PyInstaller, distribution client)
                     # ----------------------------------------------------------------
                     if getattr(sys, "frozen", False):
-                        if not latest_version or latest_version == current_version:
+                        if not latest_version:
+                            tray_dialogs.show_message(
+                                "Mise à jour",
+                                (
+                                    "Impossible de determiner la version distante pour le moment.\n"
+                                    f"Version locale : {current_label}"
+                                ),
+                                kind="warning",
+                            )
+                            return
+                        if current_version_known and latest_version == current_version:
                             tray_dialogs.show_message(
                                 "Mise à jour",
                                 f"L'agent est à jour (version {current_version}).",
@@ -819,13 +831,13 @@ class RaguiaTray:
                             return
 
                         self._set_busy_message(
-                            f"Mise a jour detectee ({current_version} -> {latest_version})"
+                            f"Mise a jour detectee ({current_label} -> {latest_version})"
                         )
                         tray_dialogs.show_message(
                             "Mise a jour detectee",
                             (
                                 "Nouvelle version disponible.\n"
-                                f"Version actuelle : {current_version}\n"
+                                f"Version actuelle : {current_label}\n"
                                 f"Nouvelle version : {latest_version}"
                             ),
                             kind="info",
@@ -867,18 +879,18 @@ class RaguiaTray:
                     info_parts: list[str] = []
                     if latest_version:
                         info_parts.append(f"Version annoncée par le serveur : {latest_version}")
-                    info_parts.append(f"Version du paquet actuel : {current_version}")
+                    info_parts.append(f"Version du paquet actuel : {current_label}")
                     info_block = "\n".join(info_parts)
 
-                    if latest_version and latest_version != current_version:
+                    if latest_version and (not current_version_known or latest_version != current_version):
                         self._set_busy_message(
-                            f"Mise a jour detectee ({current_version} -> {latest_version})"
+                            f"Mise a jour detectee ({current_label} -> {latest_version})"
                         )
                         tray_dialogs.show_message(
                             "Mise a jour detectee",
                             (
                                 "Le serveur annonce une nouvelle version.\n"
-                                f"Version actuelle : {current_version}\n"
+                                f"Version actuelle : {current_label}\n"
                                 f"Nouvelle version : {latest_version}"
                             ),
                             kind="info",
