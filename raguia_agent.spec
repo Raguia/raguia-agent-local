@@ -10,8 +10,8 @@
 # macOS    → dist/raguia-agent.app   (bundle .app, LSUIElement=True = invisible dans le Dock)
 # Linux    → dist/raguia-agent       (single-file)
 
-import sys
 import re
+import sys
 from pathlib import Path
 
 block_cipher = None
@@ -91,9 +91,30 @@ _exe_common = dict(
     icon=None,
 )
 
+# Include the app assets (icons, etc.) in the build
+ASSETS_DIR = AGENT_ROOT / "assets"
+icons_dir = ASSETS_DIR / "icons"
+
+# Collect icon files for each platform (png source copied to .ico/.icns during CI or manually)
+windows_icon = str(icons_dir / "raguia-agent.ico")
+mac_icon = str(icons_dir / "raguia-agent.icns")
+linux_icon = str(icons_dir / "raguia-agent.png")
+
+# Add the assets to the datas so PyInstaller ships them next to the executable/bundle
+if ASSETS_DIR.exists():
+    a.datas += [
+        (str(ASSETS_DIR / "logo_agent-local.png"), str(ASSETS_DIR)),
+        (str(icons_dir / "raguia-agent.png"), str(icons_dir)),
+        (str(icons_dir / "raguia-agent.ico"), str(icons_dir)),
+        (str(icons_dir / "raguia-agent.icns"), str(icons_dir)),
+    ]
+
 if is_win:
     # ------------------------------------------------------------------ Windows
     # Single-file .exe : tout embarqué, pas de console (--windowed)
+    # Use the .ico file if available
+    if (AGENT_ROOT / "assets" / "icons" / "raguia-agent.ico").exists():
+        _exe_common["icon"] = str(AGENT_ROOT / "assets" / "icons" / "raguia-agent.ico")
     exe = EXE(
         pyz,
         a.scripts,
@@ -107,6 +128,9 @@ if is_win:
 elif is_mac:
     # ------------------------------------------------------------------ macOS
     # Bundle .app (windowed) : LSUIElement masque l'app du Dock et du switcher
+    # Use the .icns file if available
+    if (AGENT_ROOT / "assets" / "icons" / "raguia-agent.icns").exists():
+        _exe_common["icon"] = str(AGENT_ROOT / "assets" / "icons" / "raguia-agent.icns")
     exe = EXE(
         pyz,
         a.scripts,
@@ -127,7 +151,7 @@ elif is_mac:
     app = BUNDLE(
         coll,
         name="raguia-agent.app",
-        icon=None,
+        icon=_exe_common.get("icon"),
         bundle_identifier="fr.valentin-fiess.raguia.agent",
         info_plist={
             "NSPrincipalClass": "NSApplication",
@@ -141,6 +165,7 @@ elif is_mac:
 
 else:
     # ------------------------------------------------------------------ Linux
+    # For Linux we'll keep the PNG next to the binary and optionally set icon
     exe = EXE(
         pyz,
         a.scripts,

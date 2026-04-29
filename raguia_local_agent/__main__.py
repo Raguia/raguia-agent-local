@@ -10,10 +10,10 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from .api_client import PortalApiClient, http_response_detail
-from .config import APP_DATA_DIR, AgentConfig, is_first_launch, load_config
-from .logging_utils import setup_logging
-from .sync_agent import SyncAgent
+from raguia_local_agent.api_client import PortalApiClient, http_response_detail
+from raguia_local_agent.config import APP_DATA_DIR, AgentConfig, is_first_launch, load_config
+from raguia_local_agent.logging_utils import setup_logging
+from raguia_local_agent.sync_agent import SyncAgent
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -87,7 +87,7 @@ def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
     if is_first_launch():
         print("Premier lancement — ouverture de l'assistant de configuration...")
         try:
-            from .wizard import run_wizard
+            from raguia_local_agent.wizard import run_wizard
             result = run_wizard()
             if result is None:
                 print("Configuration annulee. Arret.")
@@ -175,7 +175,7 @@ def main() -> None:
             t.start()
 
             try:
-                from .tray import RaguiaTray
+                from raguia_local_agent.tray import RaguiaTray
                 tray = RaguiaTray(agent, on_quit=agent.stop)
                 tray.run()          # bloque dans le thread principal (requis sur macOS)
             except ImportError:
