@@ -36,26 +36,7 @@ jobs:
         run: pyinstaller raguia_agent.spec --noconfirm
 
       - name: Package Windows artifacts
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-          import shutil
-
-          src = Path("dist/raguia-agent.exe")
-          if not src.exists():
-              raise SystemExit(f"Expected file not found: {src}")
-
-          target = Path("raguia-agent-windows.exe")
-          shutil.copy2(src, target)
-
-          digest = hashlib.sha256(target.read_bytes()).hexdigest()
-          Path("raguia-agent-windows.exe.sha256").write_text(
-              f"{digest}  {target.name}\n",
-              encoding="utf-8",
-          )
-          PY
+        run: python scripts/package_release_asset.py --source "dist/raguia-agent.exe" --target "raguia-agent-windows.exe"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -87,23 +68,9 @@ jobs:
         run: pyinstaller raguia_agent.spec --noconfirm
 
       - name: Package macOS artifacts
-        shell: bash
         run: |
           ditto -c -k --sequesterRsrc --keepParent "dist/raguia-agent.app" "raguia-agent-macos-arm64.zip"
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-
-          target = Path("raguia-agent-macos-arm64.zip")
-          if not target.exists():
-              raise SystemExit(f"Expected file not found: {target}")
-
-          digest = hashlib.sha256(target.read_bytes()).hexdigest()
-          Path("raguia-agent-macos-arm64.zip.sha256").write_text(
-              f"{digest}  {target.name}\n",
-              encoding="utf-8",
-          )
-          PY
+          python scripts/package_release_asset.py --source "raguia-agent-macos-arm64.zip" --target "raguia-agent-macos-arm64.zip"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
