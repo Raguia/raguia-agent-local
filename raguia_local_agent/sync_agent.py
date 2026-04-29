@@ -272,11 +272,14 @@ class SyncAgent:
                 self.queue.mark_error(meta["relative_path"], err_txt)
             if e.response.status_code == 401:
                 log.error(
-                    "Upload refuse (401) : %s — regenerez le jeton depuis le portail "
-                    "(meme URL api_base / meme backend qu'a l'emission du JWT en dev).",
+                    "Upload refuse (401) : %s — reconnectez l'agent via l'icone "
+                    "« Se connecter / Reconnecter » (meme URL api_base / meme backend en dev).",
                     detail,
                 )
-                self._emit("error", (detail or "401 Unauthorized")[:120])
+                self._emit(
+                    "error",
+                    "Session agent invalide (401) — reconnectez-vous via l'icone",
+                )
             else:
                 log.exception("Upload echoue (%s)", reason)
                 self._emit("error", err_txt[:80])
@@ -350,15 +353,15 @@ class SyncAgent:
                             self._last_401_log_ts = now_t
                             log.error(
                                 "Jeton agent refuse par le portail (401) : %s\n"
-                                "  → Portail : emettre un nouveau jeton (POST …/agent/issue-token) "
-                                "et menu icone « Mettre a jour le jeton JWT », ou verifier api_base.\n"
+                                "  → Reconnectez l'agent via le menu icone « Se connecter / Reconnecter » "
+                                "ou verifiez api_base.\n"
                                 "  → Dev local : le JWT doit etre signe par ce backend (SECRET_KEY), "
                                 "pas copie depuis la prod.",
                                 detail or e,
                             )
                         self._emit(
                             "error",
-                            (detail or "401 — jeton agent invalide")[:160],
+                            "Session agent invalide (401) — reconnectez-vous via l'icone",
                         )
                     elif he:
                         log.warning(
@@ -409,7 +412,7 @@ class SyncAgent:
                         self._last_auth_skip_log_ts = now_s
                         log.warning(
                             "Cycle %s ignore tant que le jeton est refuse (401). "
-                            "Forcez « Synchroniser maintenant » apres correction, ou mettez a jour le JWT.",
+                            "Forcez « Synchroniser maintenant » apres correction, ou reconnectez l'agent.",
                             reason,
                         )
 
@@ -502,11 +505,14 @@ class SyncAgent:
             if not exp:
                 return
             days = (exp - _time.time()) / 86400
-            if days <= 0:
-                log.error("Token EXPIRE ! Renouvelez depuis le portail.")
-                self._emit("error", "Token expire")
-            elif days <= 7:
-                log.info("Token expire dans %.1f jours. Tentative de renouvellement automatique...", days)
+            if days <= 7:
+                if days <= 0:
+                    log.warning("Token expire. Tentative de refresh silencieux...")
+                else:
+                    log.info(
+                        "Token expire dans %.1f jours. Tentative de renouvellement automatique...",
+                        days,
+                    )
                 try:
                     res = self.client.refresh_token()
                     new_token = res.get("access_token")
@@ -516,8 +522,18 @@ class SyncAgent:
                         log.info("Token renouvele avec succes !")
                         self._emit("idle")
                 except Exception as e:
-                    log.error("Echec du renouvellement auto du token : %s", e)
-                    self._emit("warning", f"Token expire dans {days:.0f} j (echec refresh)")
+                    if days <= 0:
+                        log.error("Echec du refresh silencieux (token deja expire) : %s", e)
+                        self._emit(
+                            "error",
+                            "Session expiree — reconnectez-vous via l'icone",
+                        )
+                    else:
+                        log.error("Echec du renouvellement auto du token : %s", e)
+                        self._emit(
+                            "warning",
+                            f"Token expire dans {days:.0f} j (echec refresh)",
+                        )
             else:
                 log.debug("Token valide (%.0f jours restants)", days)
         except Exception as e:

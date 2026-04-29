@@ -88,6 +88,30 @@ def _request_with_retry(
     raise last_exc  # type: ignore[misc]
 
 
+def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any]:
+    """Connexion agent (slug + mot de passe portail) -> JWT agent."""
+    base = validate_api_base(api_base)
+    s = (slug or "").strip().lower()
+    p = (password or "").strip()
+    if not s:
+        raise ValueError("Slug client manquant")
+    if not p:
+        raise ValueError("Mot de passe portail manquant")
+    with httpx.Client(trust_env=False, follow_redirects=False) as client:
+        r = _request_with_retry(
+            client,
+            "POST",
+            f"{base}/api/portal/agent/login",
+            json={"slug": s, "password": p},
+            timeout=30.0,
+        )
+    r.raise_for_status()
+    payload = r.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Réponse login agent invalide (JSON objet attendu).")
+    return payload
+
+
 class PortalApiClient:
     def __init__(self, api_base: str, agent_token: str):
         self.api_base = validate_api_base(api_base)

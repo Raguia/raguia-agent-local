@@ -6,14 +6,13 @@ import logging
 import os
 import subprocess
 import sys
-import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import yaml
-from .api_client import validate_api_base
+from .api_client import PortalApiClient, portal_agent_login, validate_api_base
 from .config import DEFAULT_API_BASE
 from .secret_store import save_token
 
@@ -157,9 +156,10 @@ class SetupWizard:
         self._frames: list[tk.Frame] = []
 
         # Variables Tk
-        self.var_api   = tk.StringVar(value=api_base)
-        self.var_token = tk.StringVar()
-        self.var_dir   = tk.StringVar(value=_detect_default_parent())
+        self.var_api = tk.StringVar(value=api_base)
+        self.var_slug = tk.StringVar()
+        self.var_password = tk.StringVar()
+        self.var_dir = tk.StringVar(value=_detect_default_parent())
 
         self._build_ui()
         self._show_step(0)
@@ -228,7 +228,7 @@ class SetupWizard:
         self._container = tk.Frame(self.root, padx=24, pady=16, bg=_BRAND_BG)
         self._container.pack(fill="both", expand=True)
 
-        # -- Page 0 : API + Token --
+        # -- Page 0 : API + Login --
         p0 = tk.Frame(self._container, bg=_BRAND_BG)
         tk.Label(p0, text="Etape 1 / 3 — Connexion au portail",
                  font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
@@ -236,14 +236,21 @@ class SetupWizard:
         ttk.Entry(p0, textvariable=self.var_api, width=52, style="Raguia.TEntry").pack(fill="x", pady=(2, 10))
         tk.Label(
             p0,
-            text="Jeton agent (obtenu depuis le portail → Parametres) :",
+            text="Slug client (ex: entreprise-demo) :",
             bg=_BRAND_BG,
             fg=_BRAND_BLACK,
         ).pack(anchor="w")
-        ttk.Entry(p0, textvariable=self.var_token, width=52, show="*", style="Raguia.TEntry").pack(fill="x", pady=(2, 0))
+        ttk.Entry(p0, textvariable=self.var_slug, width=52, style="Raguia.TEntry").pack(fill="x", pady=(2, 10))
         tk.Label(
             p0,
-            text="Le jeton est un JWT valable plusieurs annees.",
+            text="Mot de passe portail client :",
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
+        ).pack(anchor="w")
+        ttk.Entry(p0, textvariable=self.var_password, width=52, show="*", style="Raguia.TEntry").pack(fill="x", pady=(2, 0))
+        tk.Label(
+            p0,
+            text="Le mot de passe sert a obtenir un JWT agent, stocke de facon securisee (trousseau).",
             fg=_BRAND_MUTED, bg=_BRAND_BG, font=("Helvetica", 9),
         ).pack(anchor="w", pady=(4, 0))
         self._frames.append(p0)
@@ -303,8 +310,11 @@ class SetupWizard:
 
     def _next(self) -> None:
         if self._step == 0:
-            if not self.var_token.get().strip():
-                messagebox.showwarning("Jeton manquant", "Entrez votre jeton agent.")
+            if not self.var_slug.get().strip():
+                messagebox.showwarning("Slug manquant", "Entrez le slug client.")
+                return
+            if not self.var_password.get().strip():
+                messagebox.showwarning("Mot de passe manquant", "Entrez le mot de passe portail.")
                 return
             try:
                 validate_api_base(self.var_api.get())
@@ -322,38 +332,44 @@ class SetupWizard:
         if d:
             self.var_dir.set(d)
 
-    def _run_test(self) -> None:
+    def _login_and_validate(self) -> tuple[bool, str, str]:
         import httpx
+
+        api_base = validate_api_base(self.var_api.get())
+        slug = self.var_slug.get().strip().lower()
+        password = self.var_password.get().strip()
+        if not slug:
+            return False, "Slug manquant.", ""
+        if not password:
+            return False, "Mot de passe portail manquant.", ""
+
+        try:
+            login_payload = portal_agent_login(api_base, slug, password)
+            token = str(login_payload.get("agent_access_token") or "").strip()
+            if not token:
+                return False, "Connexion impossible : reponse login sans token agent.", ""
+
+            client = PortalApiClient(api_base, token)
+            try:
+                client.sync_status()
+            finally:
+                client.close()
+            return True, "Connexion reussie !", token
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                return False, "Identifiants invalides ou agent local desactive.", ""
+            return False, f"Erreur HTTP {e.response.status_code}", ""
+        except Exception as e:
+            return False, f"Impossible de joindre le portail : {e}", ""
+
+    def _run_test(self) -> None:
         self._test_label.config(text="Test en cours…", fg="black")
         self.root.update()
-
-        def _do():
-            try:
-                api_base = validate_api_base(self.var_api.get())
-                r = httpx.get(
-                    f"{api_base}/api/portal/agent/sync-status",
-                    headers={"Authorization": f"Bearer {self.var_token.get().strip()}"},
-                    timeout=10.0,
-                    trust_env=False,
-                )
-                if r.status_code == 200:
-                    return True, "Connexion reussie !"
-                elif r.status_code == 401:
-                    return False, "Jeton invalide ou expire."
-                else:
-                    return False, f"Erreur HTTP {r.status_code}"
-            except Exception as e:
-                return False, f"Impossible de joindre le portail : {e}"
-
-        ok, msg = _do()
+        ok, msg, _token = self._login_and_validate()
         color = "#16a34a" if ok else "#dc2626"
         self._test_label.config(text=msg, fg=color)
 
     def _save(self) -> None:
-        token = self.var_token.get().strip()
-        if not token:
-            messagebox.showwarning("Jeton manquant", "Entrez votre jeton agent.")
-            return
         config_dir = Path.home() / ".raguia"
         config_dir.mkdir(exist_ok=True)
         config_path = config_dir / "config.yaml"
@@ -362,10 +378,17 @@ class SetupWizard:
         except ValueError as e:
             messagebox.showwarning("URL invalide", str(e))
             return
+
+        ok, msg, token = self._login_and_validate()
+        if not ok or not token:
+            messagebox.showwarning("Connexion impossible", msg)
+            return
+
         data = {
-            "api_base":      api_base,
-            "agent_token":   save_token(config_path, token),
-            "watch_parent":  self.var_dir.get(),
+            "api_base": api_base,
+            "client_slug": self.var_slug.get().strip().lower(),
+            "agent_token": save_token(config_path, token),
+            "watch_parent": self.var_dir.get(),
         }
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, allow_unicode=True)

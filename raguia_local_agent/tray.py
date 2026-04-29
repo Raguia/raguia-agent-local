@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from .sync_agent import SyncAgent
 
 from . import tray_dialogs
-from .api_client import validate_api_base
+from .api_client import http_response_detail, portal_agent_login, validate_api_base
 from .config import APP_DATA_DIR
 from .doctor import run_doctor
 from .logging_utils import export_support_bundle
@@ -481,49 +482,54 @@ class RaguiaTray:
             except Exception:
                 pass
 
-        def update_jwt(icon, item):
+        def reconnect_portal(icon, item):
             try:
                 import yaml
             except Exception:
                 self._on_agent_status(TrayStatus.ERROR, "PyYAML indisponible")
                 tray_dialogs.show_message(
-                    "Mise a jour JWT impossible",
+                    "Connexion portail impossible",
                     "Le module PyYAML est indisponible.",
                     kind="error",
                 )
                 return
 
             def work() -> None:
-                self._begin_busy("Mise a jour du jeton JWT...")
+                self._begin_busy("Connexion portail...")
                 try:
-                    self._set_busy_message("Ouverture de la fenetre de saisie JWT...")
-                    new_token = tray_dialogs.prompt_agent_token()
-                    if new_token is None:
+                    self._set_busy_message("Saisie des identifiants portail...")
+                    creds = tray_dialogs.prompt_portal_login()
+                    if creds is None:
                         tray_dialogs.show_message(
-                            "Mise a jour JWT annulee",
-                            "Aucun nouveau jeton n'a ete saisi.",
+                            "Connexion annulee",
+                            "Aucune information de connexion n'a ete saisie.",
                             kind="info",
                         )
                         return
-                    new_token = new_token.strip()
-                    if not new_token:
-                        tray_dialogs.show_message(
-                            "Jeton vide",
-                            "Aucun jeton saisi.",
-                            kind="warning",
-                        )
-                        return
+                    slug, password = creds
 
+                    self._set_busy_message("Connexion au portail et recuperation du token agent...")
                     old_token = self._agent.cfg.agent_token
-                    self._agent.update_agent_token(new_token)
-                    self._set_busy_message("Verification du nouveau jeton...")
                     try:
+                        payload = portal_agent_login(self._agent.cfg.api_base, slug, password)
+                        new_token = str(payload.get("agent_access_token") or "").strip()
+                        if not new_token:
+                            raise ValueError("Le portail n'a pas retourne de token agent.")
+                        self._agent.update_agent_token(new_token)
                         self._agent.client.sync_status()
                     except Exception as e:
-                        self._agent.update_agent_token(old_token)
+                        with suppress(Exception):
+                            self._agent.update_agent_token(old_token)
+                        if hasattr(e, "response"):
+                            try:
+                                detail = http_response_detail(e.response)  # type: ignore[attr-defined]
+                            except Exception:
+                                detail = str(e)
+                        else:
+                            detail = str(e)
                         tray_dialogs.show_message(
-                            "Jeton invalide",
-                            f"Le jeton n'a pas ete accepte:\n{e}",
+                            "Connexion refusee",
+                            f"Echec de connexion portail:\n{detail}",
                             kind="error",
                         )
                         return
@@ -535,6 +541,7 @@ class RaguiaTray:
                     if cfg_file.is_file():
                         with open(cfg_file, encoding="utf-8") as f:
                             data = yaml.safe_load(f) or {}
+                    data["client_slug"] = slug
                     data["agent_token"] = save_token(cfg_file, new_token)
                     with open(cfg_file, "w", encoding="utf-8") as f:
                         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
@@ -544,11 +551,11 @@ class RaguiaTray:
                         pass
 
                     tray_dialogs.show_message(
-                        "Jeton mis a jour",
-                        "Le nouveau jeton est actif immediatement et enregistre.",
+                        "Connexion reussie",
+                        "Session agent mise a jour et enregistree avec succes.",
                         kind="info",
                     )
-                    self._on_agent_status(TrayStatus.IDLE, "Jeton mis a jour")
+                    self._on_agent_status(TrayStatus.IDLE, "Session agent reconnectee")
                 finally:
                     self._end_busy()
 
@@ -981,7 +988,7 @@ class RaguiaTray:
             pystray.MenuItem("Lancer un diagnostic (Doctor)…", run_doctor_ui),
             pystray.MenuItem("Verifier / installer mise a jour…", run_update_ui),
             pystray.MenuItem("Exporter un bundle support…", export_support),
-            pystray.MenuItem("Mettre a jour le jeton JWT…", update_jwt),
+            pystray.MenuItem("Se connecter / Reconnecter…", reconnect_portal),
             *(
                 [pystray.MenuItem("Maintenance (cache) — Basculer PROD/DEV", switch_environment)]
                 if admin_switch_cfg

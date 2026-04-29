@@ -243,6 +243,29 @@ def prompt_agent_token() -> str | None:
             pass
 
 
+def prompt_portal_login() -> tuple[str, str] | None:
+    """Demande slug + mot de passe portail. Retourne ``None`` si annulation."""
+    slug = prompt_text(
+        "Raguia — Connexion portail",
+        "Slug client (ex: entreprise-demo) :",
+        masked=False,
+    )
+    if slug is None:
+        return None
+    password = prompt_text(
+        "Raguia — Connexion portail",
+        "Mot de passe portail :",
+        masked=True,
+    )
+    if password is None:
+        return None
+    slug = slug.strip().lower()
+    password = password.strip()
+    if not slug or not password:
+        return None
+    return slug, password
+
+
 def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:
     """Affiche un input texte simple. Retourne None si annule/vide."""
     out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
