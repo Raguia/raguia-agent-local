@@ -31,9 +31,13 @@ def _credential_id_candidates(config_path: Path | None) -> list[str]:
         except Exception:
             resolved = expanded
         ids.extend([resolved, expanded, raw])
-    # Compat historique + fallback robuste si chemin de config a changé.
-    ids.append(str((Path.home() / ".raguia" / "config.yaml").resolve()))
-    ids.append("default")
+    else:
+        # Fallback uniquement si aucun chemin de config connu.
+        try:
+            ids.append(str((Path.home() / ".raguia" / "config.yaml").resolve()))
+        except Exception:
+            ids.append(str(Path.home() / ".raguia" / "config.yaml"))
+        ids.append("default")
 
     dedup: list[str] = []
     seen = set()
