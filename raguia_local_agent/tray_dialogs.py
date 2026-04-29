@@ -95,6 +95,46 @@ def prompt_agent_token() -> str | None:
             pass
 
 
+def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:
+    """Affiche un input texte simple. Retourne None si annule/vide."""
+    out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    out_path.close()
+    path = out_path.name
+    show_value = "*" if masked else ""
+    try:
+        script = (
+            "import tkinter as tk\n"
+            "from tkinter import simpledialog\n"
+            "root = tk.Tk()\n"
+            "root.withdraw()\n"
+            "try:\n"
+            "    root.lift()\n"
+            "    root.attributes('-topmost', True)\n"
+            "    root.update_idletasks()\n"
+            "except Exception:\n"
+            "    pass\n"
+            "try:\n"
+            f"    t = simpledialog.askstring({title!r}, {prompt!r}, show={show_value!r}, parent=root)\n"
+            "finally:\n"
+            "    root.destroy()\n"
+            f"with open({path!r}, 'w', encoding='utf-8') as f:\n"
+            "    f.write((t or '').strip())\n"
+        )
+        r = _run_tk_subprocess(script)
+        if r.returncode != 0:
+            log.warning("prompt_text: code=%s stderr=%s", r.returncode, (r.stderr or "")[:500])
+        raw = Path(path).read_text(encoding="utf-8").strip()
+        return raw if raw else None
+    except Exception as e:
+        log.exception("prompt_text: %s", e)
+        return None
+    finally:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def show_message(title: str, message: str, *, kind: str = "info") -> None:
     """kind: info | warning | error"""
     fn = {"info": "showinfo", "warning": "showwarning", "error": "showerror"}.get(

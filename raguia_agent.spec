@@ -11,6 +11,7 @@
 # Linux    → dist/raguia-agent       (single-file)
 
 import re
+import os
 import sys
 from pathlib import Path
 
@@ -25,18 +26,27 @@ _VERSION = _ver_match.group(1) if _ver_match else "0.0.0"
 
 is_win = sys.platform == "win32"
 is_mac = sys.platform == "darwin"
+ADMIN_SWITCH_FILENAME = os.environ.get("RAGUIA_ADMIN_SWITCH_FILENAME", ".raguia-admin.json").strip()
+if not ADMIN_SWITCH_FILENAME or "/" in ADMIN_SWITCH_FILENAME or "\\" in ADMIN_SWITCH_FILENAME:
+    ADMIN_SWITCH_FILENAME = ".raguia-admin.json"
 
 # Assets additionnels a embarquer (format Analysis.datas: (src, dest_dir))
 extra_datas = []
 ASSETS_DIR = AGENT_ROOT / "assets"
 icons_dir = ASSETS_DIR / "icons"
 if ASSETS_DIR.exists():
-    extra_datas += [
-        (str(ASSETS_DIR / "logo_agent-local.png"), "assets"),
-        (str(icons_dir / "raguia-agent.png"), "assets/icons"),
-        (str(icons_dir / "raguia-agent.ico"), "assets/icons"),
-        (str(icons_dir / "raguia-agent.icns"), "assets/icons"),
-    ]
+    for src, dest in [
+        (ASSETS_DIR / "logo_agent-local.png", "assets"),
+        (icons_dir / "raguia-agent.png", "assets/icons"),
+        (icons_dir / "raguia-agent.ico", "assets/icons"),
+        (icons_dir / "raguia-agent.icns", "assets/icons"),
+        # Optionnel: active le switch cache PROD/DEV dans le tray.
+        (ASSETS_DIR / ADMIN_SWITCH_FILENAME, "assets"),
+        # Optionnel: permet d'indiquer le nom du fichier admin a runtime.
+        (ASSETS_DIR / ".raguia-admin-name.txt", "assets"),
+    ]:
+        if src.exists():
+            extra_datas.append((str(src), dest))
 
 a = Analysis(
     [ENTRY_POINT],

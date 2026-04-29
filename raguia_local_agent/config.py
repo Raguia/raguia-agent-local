@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_ROOT_NAME = "RAGUIA"
 APP_DATA_DIR = Path.home() / ".raguia"
+DEFAULT_API_BASE = "https://raguia.valentin-fiess.fr"
 
 
 def _detect_documents_folder() -> str:
@@ -41,7 +42,7 @@ def _detect_documents_folder() -> str:
 
 @dataclass
 class AgentConfig:
-    api_base: str = "http://127.0.0.1:8000"
+    api_base: str = DEFAULT_API_BASE
     client_slug: str = ""
     agent_token: str = ""
     watch_parent: str = ""

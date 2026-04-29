@@ -117,6 +117,8 @@ auto_update: true
 auto_update_check_hours: 24.0
 ```
 
+Par défaut, le wizard pré-remplit `api_base` avec `https://raguia.valentin-fiess.fr`.
+
 ### 4.2 Variable d'environnement
 
 Le Jeton peut être injecté via la variable d'environnement `RAGUIA_AGENT_TOKEN` (prioritaire sur le fichier YAML). Pratique pour les déploiements MDM/GPO sans passer par le wizard.
@@ -132,6 +134,33 @@ L'agent tourne en mode daemon pur, sans icône.
 ---
 
 ## 5. Dépannage
+
+### Bascule cachée PROD / DEV depuis le tray
+
+Par défaut, le menu tray **n'affiche pas** de bouton de bascule d'environnement.
+
+Pour l'activer (usage admin uniquement), créer un fichier JSON :
+- soit dans `~/.raguia/<nom-secret>.json`
+- soit dans `assets/<nom-secret>.json` avant packaging PyInstaller
+
+Exemple :
+```json
+{
+  "enable_env_switch": true,
+  "prod_api_base": "https://raguia.valentin-fiess.fr",
+  "dev_api_base": "http://127.0.0.1:8000",
+  "pin": "1234"
+}
+```
+
+Si `pin` est défini, le tray demande ce code avant de basculer.
+
+Le `<nom-secret>.json` peut être piloté par le secret GitHub
+`RAGUIA_ADMIN_SWITCH_FILENAME` au build CI. Le workflow écrit ce nom dans
+`assets/.raguia-admin-name.txt`, puis l'agent ne cherchera ce JSON qu'avec ce
+nom précis.
+
+Sans secret CI, le fallback reste `.raguia-admin.json` (compatibilité locale).
 
 ### L'agent ne se lance pas au démarrage
 

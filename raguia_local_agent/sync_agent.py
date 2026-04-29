@@ -329,7 +329,7 @@ class SyncAgent:
                         last_update_check = time.time()
                         has_update = self.updater.check_and_log(AGENT_VERSION)
                         if has_update:
-                            self._emit("warning", "Mise a jour disponible (menu tray)")
+                            self._emit("update", "Mise a jour disponible (menu tray)")
                         self._check_token_expiry()
 
                 # --- Polling sync-status ---
@@ -573,3 +573,17 @@ class SyncAgent:
             raise ValueError("Jeton vide")
         self.cfg.agent_token = token
         self.client.set_agent_token(token)
+
+    def update_api_base(self, api_base: str) -> None:
+        """Met a jour api_base a chaud (client HTTP + updater)."""
+        api_base = (api_base or "").strip().rstrip("/")
+        if not api_base:
+            raise ValueError("URL du portail vide")
+        old_client = self.client
+        self.client = PortalApiClient(api_base, self.cfg.agent_token)
+        self.updater = AgentUpdater(self.client, AGENT_VERSION)
+        self.cfg.api_base = api_base
+        try:
+            old_client.close()
+        except Exception:
+            pass

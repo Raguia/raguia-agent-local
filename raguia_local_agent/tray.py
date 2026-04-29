@@ -27,13 +27,19 @@ if TYPE_CHECKING:
     from .sync_agent import SyncAgent
 
 from . import tray_dialogs
+from .api_client import validate_api_base
 from .doctor import run_doctor
 from .logging_utils import export_support_bundle
 from .secret_store import save_token
 
+_DEFAULT_PROD_API_BASE = "https://raguia.valentin-fiess.fr"
+_DEFAULT_DEV_API_BASE = "http://127.0.0.1:8000"
+_DEFAULT_ADMIN_SWITCH_FILENAME = ".raguia-admin.json"
+
 _COLORS = {
     "idle":    "#22c55e",   # vert
     "syncing": "#3b82f6",   # bleu
+    "update":  "#a855f7",   # violet (maj dispo)
     "warning": "#f59e0b",   # orange
     "error":   "#ef4444",   # rouge
     "stopped": "#6b7280",   # gris
@@ -84,26 +90,178 @@ def _remove_windows_autostart() -> None:
         pass
 
 
+def _resolve_agent_config_path() -> Path:
+    cfg_path = os.environ.get("RAGUIA_AGENT_CONFIG")
+    if cfg_path:
+        return Path(cfg_path)
+    return Path.home() / ".raguia" / "config.yaml"
+
+
+def _sanitize_admin_filename(name: str) -> str:
+    """Autorise uniquement un nom de fichier simple (pas de chemin)."""
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    if Path(raw).name != raw:
+        return ""
+    if any(ch in raw for ch in ("/", "\\", "\x00")):
+        return ""
+    return raw
+
+
+def _read_admin_filename_from_file(path: Path) -> str:
+    try:
+        return _sanitize_admin_filename(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return ""
+
+
+def _admin_filename_namefile_candidates() -> list[Path]:
+    """Emplacements possibles du fichier contenant le nom secret."""
+    paths = [Path.home() / ".raguia" / ".raguia-admin-name.txt"]
+    exe = Path(sys.executable).resolve()
+    if getattr(sys, "frozen", False):
+        paths += [
+            exe.parent / "assets" / ".raguia-admin-name.txt",
+            exe.parent.parent / "Resources" / "assets" / ".raguia-admin-name.txt",
+            exe.parent.parent.parent / "Resources" / "assets" / ".raguia-admin-name.txt",
+        ]
+    else:
+        here = Path(__file__).resolve()
+        paths.append(here.parents[1] / "assets" / ".raguia-admin-name.txt")
+    return paths
+
+
+def _resolve_admin_switch_filename() -> str:
+    """Nom du JSON admin recherché pour activer le switch caché.
+
+    Priorite:
+      1) env RAGUIA_ADMIN_SWITCH_FILENAME
+      2) contenu d'un fichier .raguia-admin-name.txt
+      3) valeur par defaut (compat)
+    """
+    from_env = _sanitize_admin_filename(os.environ.get("RAGUIA_ADMIN_SWITCH_FILENAME", ""))
+    if from_env:
+        return from_env
+    for p in _admin_filename_namefile_candidates():
+        if p.is_file():
+            from_file = _read_admin_filename_from_file(p)
+            if from_file:
+                return from_file
+    return _DEFAULT_ADMIN_SWITCH_FILENAME
+
+
+def _admin_switch_candidate_paths() -> list[Path]:
+    """Fichiers admin autorisant le menu cache de bascule env."""
+    admin_filename = _resolve_admin_switch_filename()
+    paths = [Path.home() / ".raguia" / admin_filename]
+    env_override = os.environ.get("RAGUIA_ADMIN_SWITCH_FILE")
+    if env_override:
+        paths.insert(0, Path(env_override))
+
+    exe = Path(sys.executable).resolve()
+    if getattr(sys, "frozen", False):
+        paths += [
+            exe.parent / "assets" / admin_filename,
+            exe.parent.parent / "Resources" / "assets" / admin_filename,
+            exe.parent.parent.parent / "Resources" / "assets" / admin_filename,
+        ]
+    else:
+        here = Path(__file__).resolve()
+        paths.append(here.parents[1] / "assets" / admin_filename)
+    return paths
+
+
+def _load_admin_switch_config() -> dict | None:
+    """Lit le fichier admin optionnel; retourne None si absent/desactive."""
+    for p in _admin_switch_candidate_paths():
+        if not p.is_file():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if not bool(data.get("enable_env_switch")):
+            continue
+        prod_api = str(data.get("prod_api_base") or _DEFAULT_PROD_API_BASE).strip().rstrip("/")
+        dev_api = str(data.get("dev_api_base") or _DEFAULT_DEV_API_BASE).strip().rstrip("/")
+        pin = str(data.get("pin") or "").strip()
+        return {"prod_api_base": prod_api, "dev_api_base": dev_api, "pin": pin}
+    return None
+
+
 class TrayStatus(str, Enum):
     IDLE    = "idle"
     SYNCING = "syncing"
+    UPDATE  = "update"
     WARNING = "warning"
     ERROR   = "error"
     STOPPED = "stopped"
 
 
-def _make_icon(color: str, size: int = 64):
-    """Genere une image PIL avec un cercle colore."""
+def _make_icon(status: str, size: int = 64, phase: int = 0):
+    """Genere une icone plus lisible (forme + couleur).
+
+    - idle    : coche
+    - syncing : animation d'arc tournant
+    - update  : fleche vers le bas
+    - warning : point d'exclamation
+    - error   : croix
+    - stopped : barre horizontale
+    """
     from PIL import Image, ImageDraw
+
+    color = _COLORS.get(status, "#6b7280")
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    margin = 4
+    margin = 5
+    center = size // 2
+    glyph = "#ffffff"
+
     draw.ellipse(
         [margin, margin, size - margin, size - margin],
         fill=color,
         outline="#ffffff",
         width=2,
     )
+
+    if status == "syncing":
+        ring_m = 11
+        start = phase % 360
+        draw.arc(
+            [ring_m, ring_m, size - ring_m, size - ring_m],
+            start=start,
+            end=start + 120,
+            fill="#ffffff",
+            width=5,
+        )
+        draw.ellipse([center - 4, center - 4, center + 4, center + 4], fill="#ffffff")
+        return img
+
+    if status == "idle":
+        draw.line(
+            [(center - 13, center + 1), (center - 4, center + 10), (center + 14, center - 10)],
+            fill=glyph,
+            width=5,
+            joint="curve",
+        )
+    elif status == "update":
+        draw.line([(center, center - 14), (center, center + 6)], fill=glyph, width=5)
+        draw.polygon(
+            [(center - 9, center + 1), (center + 9, center + 1), (center, center + 13)],
+            fill=glyph,
+        )
+    elif status == "warning":
+        draw.line([(center, center - 13), (center, center + 3)], fill=glyph, width=5)
+        draw.ellipse([center - 3, center + 8, center + 3, center + 14], fill=glyph)
+    elif status == "error":
+        draw.line([(center - 11, center - 11), (center + 11, center + 11)], fill=glyph, width=5)
+        draw.line([(center - 11, center + 11), (center + 11, center - 11)], fill=glyph, width=5)
+    elif status == "stopped":
+        draw.rectangle([center - 11, center - 3, center + 11, center + 3], fill=glyph)
+
     return img
 
 
@@ -127,10 +285,16 @@ class RaguiaTray:
         self._icons: dict[str, object] = {}
         self._pystray = pystray
         self._tray: pystray.Icon | None = None
+        self._sync_anim_stop = threading.Event()
+        self._sync_anim_thread: threading.Thread | None = None
+        self._sync_anim_phase = 0
 
-        # Pre-generer les icones
-        for name, color in _COLORS.items():
-            self._icons[name] = _make_icon(color)
+        # Pre-generer les icones statiques
+        for name in _COLORS.keys():
+            if name == "syncing":
+                continue
+            self._icons[name] = _make_icon(name)
+        self._icons["syncing"] = _make_icon("syncing", phase=0)
 
         # L'agent pousse son statut via ce callback
         agent.on_status_change = self._on_agent_status
@@ -146,11 +310,38 @@ class RaguiaTray:
     def _refresh(self) -> None:
         if self._tray is None:
             return
+        if self._status == TrayStatus.SYNCING:
+            self._ensure_sync_animator()
+        else:
+            self._stop_sync_animator()
         try:
             self._tray.icon  = self._icons[self._status.value]
             self._tray.title = self._title()
         except Exception:
             pass
+
+    def _ensure_sync_animator(self) -> None:
+        if self._sync_anim_thread and self._sync_anim_thread.is_alive():
+            return
+        self._sync_anim_stop.clear()
+
+        def _loop() -> None:
+            while not self._sync_anim_stop.wait(0.12):
+                if self._tray is None or self._status != TrayStatus.SYNCING:
+                    continue
+                self._sync_anim_phase = (self._sync_anim_phase + 28) % 360
+                self._icons["syncing"] = _make_icon("syncing", phase=self._sync_anim_phase)
+                try:
+                    self._tray.icon = self._icons["syncing"]
+                    self._tray.title = self._title()
+                except Exception:
+                    pass
+
+        self._sync_anim_thread = threading.Thread(target=_loop, daemon=True, name="raguia-tray-sync-anim")
+        self._sync_anim_thread.start()
+
+    def _stop_sync_animator(self) -> None:
+        self._sync_anim_stop.set()
 
     # ------------------------------------------------------------------
     # Menu
@@ -159,6 +350,7 @@ class RaguiaTray:
         labels = {
             TrayStatus.IDLE:    "Raguia — Actif",
             TrayStatus.SYNCING: "Raguia — Synchronisation...",
+            TrayStatus.UPDATE:  "Raguia — Mise a jour disponible",
             TrayStatus.WARNING: f"Raguia — Attention : {self._message}",
             TrayStatus.ERROR:   f"Raguia — Erreur : {self._message}",
             TrayStatus.STOPPED: "Raguia — Arrete",
@@ -167,6 +359,7 @@ class RaguiaTray:
 
     def _menu(self):
         pystray = self._pystray
+        admin_switch_cfg = _load_admin_switch_config()
 
         def open_folder(icon, item):
             import subprocess, sys
@@ -234,11 +427,7 @@ class RaguiaTray:
                 )
                 return
 
-            cfg_path = os.environ.get("RAGUIA_AGENT_CONFIG")
-            if cfg_path:
-                cfg_file = Path(cfg_path)
-            else:
-                cfg_file = Path.home() / ".raguia" / "config.yaml"
+            cfg_file = _resolve_agent_config_path()
             cfg_file.parent.mkdir(parents=True, exist_ok=True)
 
             data = {}
@@ -259,6 +448,85 @@ class RaguiaTray:
                 kind="info",
             )
             self._on_agent_status(TrayStatus.IDLE, "Jeton mis a jour")
+
+        def switch_environment(icon, item):
+            if not admin_switch_cfg:
+                return
+            pin_required = (admin_switch_cfg.get("pin") or "").strip()
+            if pin_required:
+                pin = tray_dialogs.prompt_text(
+                    "Raguia — Acces maintenance",
+                    "Entrez le code maintenance pour changer d'environnement :",
+                    masked=True,
+                )
+                if pin is None:
+                    return
+                if pin != pin_required:
+                    tray_dialogs.show_message(
+                        "Code invalide",
+                        "Code maintenance incorrect.",
+                        kind="error",
+                    )
+                    return
+
+            current = (self._agent.cfg.api_base or "").strip().rstrip("/")
+            prod_api = str(admin_switch_cfg["prod_api_base"]).strip().rstrip("/")
+            dev_api = str(admin_switch_cfg["dev_api_base"]).strip().rstrip("/")
+            target = dev_api if current == prod_api else prod_api
+            target_label = "DEV local" if target == dev_api else "PROD"
+
+            try:
+                target = validate_api_base(target)
+            except ValueError as e:
+                tray_dialogs.show_message(
+                    "Configuration admin invalide",
+                    f"URL cible invalide : {e}",
+                    kind="error",
+                )
+                return
+
+            try:
+                self._agent.update_api_base(target)
+            except Exception as e:
+                tray_dialogs.show_message(
+                    "Bascule environnement impossible",
+                    f"Echec de mise a jour runtime :\n{e}",
+                    kind="error",
+                )
+                return
+
+            try:
+                import yaml
+
+                cfg_file = _resolve_agent_config_path()
+                cfg_file.parent.mkdir(parents=True, exist_ok=True)
+                data = {}
+                if cfg_file.is_file():
+                    with open(cfg_file, encoding="utf-8") as f:
+                        data = yaml.safe_load(f) or {}
+                data["api_base"] = target
+                with open(cfg_file, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+                try:
+                    os.chmod(cfg_file, 0o600)
+                except Exception:
+                    pass
+            except Exception as e:
+                tray_dialogs.show_message(
+                    "Bascule partielle",
+                    f"Runtime OK, mais config non sauvegardee:\n{e}",
+                    kind="warning",
+                )
+                self._on_agent_status(TrayStatus.WARNING, f"Mode {target_label}")
+                return
+
+            self._agent.force_sync()
+            tray_dialogs.show_message(
+                "Environnement change",
+                f"Agent bascule vers {target_label}:\n{target}",
+                kind="info",
+            )
+            self._on_agent_status(TrayStatus.WARNING, f"Mode {target_label}")
 
         def uninstall_agent(icon, item):
             if not tray_dialogs.confirm_uninstall():
@@ -500,6 +768,11 @@ class RaguiaTray:
             pystray.MenuItem("Verifier / installer mise a jour…", run_update_ui),
             pystray.MenuItem("Exporter un bundle support…", export_support),
             pystray.MenuItem("Mettre a jour le jeton JWT…", update_jwt),
+            *(
+                [pystray.MenuItem("Maintenance (cache) — Basculer PROD/DEV", switch_environment)]
+                if admin_switch_cfg
+                else []
+            ),
             pystray.MenuItem("Desinstaller l'agent…", uninstall_agent),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
@@ -538,4 +811,7 @@ class RaguiaTray:
             menu=pystray.Menu(lambda: self._menu()._items),
         )
         self._tray = icon
-        icon.run()
+        try:
+            icon.run()
+        finally:
+            self._stop_sync_animator()

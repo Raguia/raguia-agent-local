@@ -14,9 +14,43 @@ from typing import Optional
 
 import yaml
 from .api_client import validate_api_base
+from .config import DEFAULT_API_BASE
 from .secret_store import save_token
 
 log = logging.getLogger(__name__)
+_BRAND_RED = "#A43032"
+_BRAND_BLACK = "#010101"
+_BRAND_MUTED = "#6b7280"
+_BRAND_BG = "#f8fafc"
+_BRAND_LIGHT_RED = "#fff1f2"
+
+
+def _resolve_asset_path(relative: str) -> Path | None:
+    """Resolve un asset en mode source ou binaire PyInstaller."""
+    rel = Path(relative)
+    candidates: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        candidates += [
+            exe.parent / "assets" / rel,
+            exe.parent.parent / "Resources" / "assets" / rel,
+            exe.parent.parent.parent / "Resources" / "assets" / rel,
+        ]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "assets" / rel)
+
+    here = Path(__file__).resolve()
+    candidates += [
+        here.parents[1] / "assets" / rel,
+        Path.cwd() / "assets" / rel,
+    ]
+
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
 
 
 def _detect_default_parent() -> str:
@@ -108,14 +142,16 @@ class SetupWizard:
     Retourne la config via .result (dict) apres fermeture.
     """
 
-    def __init__(self, api_base: str = "http://127.0.0.1:8000") -> None:
+    def __init__(self, api_base: str = DEFAULT_API_BASE) -> None:
         self.result: dict | None = None
         self._api_base_default = api_base
 
         self.root = tk.Tk()
         self.root.title("Raguia — Configuration initiale")
+        self.root.configure(bg=_BRAND_BG)
         self.root.resizable(False, False)
         self._center(500, 400)
+        self._logo_img: tk.PhotoImage | None = None
 
         self._step = 0
         self._frames: list[tk.Frame] = []
@@ -141,69 +177,112 @@ class SetupWizard:
             style.theme_use("clam")
         except Exception:
             pass
+        style.configure("Raguia.TFrame", background=_BRAND_BG)
+        style.configure(
+            "Raguia.TButton",
+            padding=(12, 7),
+            background=_BRAND_RED,
+            foreground="#ffffff",
+            borderwidth=0,
+        )
+        style.map(
+            "Raguia.TButton",
+            background=[("active", "#8a2729"), ("pressed", "#7f2224"), ("disabled", "#cbd5e1")],
+            foreground=[("disabled", "#f8fafc")],
+        )
+        style.configure(
+            "Raguia.TEntry",
+            fieldbackground="#ffffff",
+            bordercolor="#d1d5db",
+            lightcolor="#d1d5db",
+            darkcolor="#d1d5db",
+            insertcolor=_BRAND_BLACK,
+            padding=6,
+        )
+        style.map("Raguia.TEntry", bordercolor=[("focus", _BRAND_RED)])
 
         # Header
-        hdr = tk.Frame(self.root, bg="#1e293b", height=60)
+        hdr = tk.Frame(self.root, bg=_BRAND_RED, height=70)
         hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        hdr_inner = tk.Frame(hdr, bg=_BRAND_RED)
+        hdr_inner.pack(fill="both", expand=True, padx=16)
+        logo_path = _resolve_asset_path("logo_agent-local.png")
+        if logo_path:
+            try:
+                self._logo_img = tk.PhotoImage(file=str(logo_path))
+                hdr_logo = self._logo_img.subsample(12, 12)
+                tk.Label(hdr_inner, image=hdr_logo, bg=_BRAND_RED).pack(side="left", pady=10, padx=(0, 10))
+                self._logo_img = hdr_logo
+            except Exception:
+                self._logo_img = None
         tk.Label(
-            hdr,
+            hdr_inner,
             text="Raguia  —  Configuration",
-            fg="#f8fafc", bg="#1e293b",
+            fg="#ffffff",
+            bg=_BRAND_RED,
             font=("Helvetica", 14, "bold"),
-        ).pack(pady=15)
+        ).pack(side="left", pady=15)
 
         # Container pages
-        self._container = tk.Frame(self.root, padx=24, pady=16)
+        self._container = tk.Frame(self.root, padx=24, pady=16, bg=_BRAND_BG)
         self._container.pack(fill="both", expand=True)
 
         # -- Page 0 : API + Token --
-        p0 = tk.Frame(self._container)
+        p0 = tk.Frame(self._container, bg=_BRAND_BG)
         tk.Label(p0, text="Etape 1 / 3 — Connexion au portail",
-                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 12))
-        tk.Label(p0, text="URL du portail Raguia :").pack(anchor="w")
-        ttk.Entry(p0, textvariable=self.var_api, width=52).pack(fill="x", pady=(2, 10))
-        tk.Label(p0, text="Jeton agent (obtenu depuis le portail → Parametres) :").pack(anchor="w")
-        ttk.Entry(p0, textvariable=self.var_token, width=52, show="*").pack(fill="x", pady=(2, 0))
+                 font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
+        tk.Label(p0, text="URL du portail Raguia :", bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w")
+        ttk.Entry(p0, textvariable=self.var_api, width=52, style="Raguia.TEntry").pack(fill="x", pady=(2, 10))
+        tk.Label(
+            p0,
+            text="Jeton agent (obtenu depuis le portail → Parametres) :",
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
+        ).pack(anchor="w")
+        ttk.Entry(p0, textvariable=self.var_token, width=52, show="*", style="Raguia.TEntry").pack(fill="x", pady=(2, 0))
         tk.Label(
             p0,
             text="Le jeton est un JWT valable plusieurs annees.",
-            fg="#64748b", font=("Helvetica", 9),
+            fg=_BRAND_MUTED, bg=_BRAND_BG, font=("Helvetica", 9),
         ).pack(anchor="w", pady=(4, 0))
         self._frames.append(p0)
 
         # -- Page 1 : Dossier --
-        p1 = tk.Frame(self._container)
+        p1 = tk.Frame(self._container, bg=_BRAND_BG)
         tk.Label(p1, text="Etape 2 / 3 — Dossier de synchronisation",
-                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 12))
+                 font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
         tk.Label(
             p1,
             text="Choisissez le dossier PARENT.\nL'agent creera automatiquement un dossier 'RAGUIA' a l'interieur.",
             justify="left",
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
         ).pack(anchor="w")
-        row = tk.Frame(p1)
+        row = tk.Frame(p1, bg=_BRAND_BG)
         row.pack(fill="x", pady=(10, 0))
-        ttk.Entry(row, textvariable=self.var_dir, width=40).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Parcourir…", command=self._browse).pack(side="left", padx=(6, 0))
+        ttk.Entry(row, textvariable=self.var_dir, width=40, style="Raguia.TEntry").pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="Parcourir…", command=self._browse, style="Raguia.TButton").pack(side="left", padx=(6, 0))
         self._frames.append(p1)
 
         # -- Page 2 : Test --
-        p2 = tk.Frame(self._container)
+        p2 = tk.Frame(self._container, bg=_BRAND_BG)
         tk.Label(p2, text="Etape 3 / 3 — Test de connexion",
-                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 12))
+                 font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
         self._test_label = tk.Label(p2, text="Appuyez sur 'Tester' pour verifier la connexion.",
-                                    justify="left", wraplength=440)
+                                    justify="left", wraplength=440, bg=_BRAND_BG, fg=_BRAND_BLACK)
         self._test_label.pack(anchor="w")
-        ttk.Button(p2, text="Tester la connexion", command=self._run_test).pack(anchor="w", pady=10)
+        ttk.Button(p2, text="Tester la connexion", command=self._run_test, style="Raguia.TButton").pack(anchor="w", pady=10)
         self._frames.append(p2)
 
         # Barre de navigation
-        nav = tk.Frame(self.root, pady=10, padx=24)
+        nav = tk.Frame(self.root, pady=10, padx=24, bg=_BRAND_LIGHT_RED)
         nav.pack(fill="x", side="bottom")
-        self._btn_back = ttk.Button(nav, text="← Retour", command=self._prev)
+        self._btn_back = ttk.Button(nav, text="← Retour", command=self._prev, style="Raguia.TButton")
         self._btn_back.pack(side="left")
-        self._btn_next = ttk.Button(nav, text="Suivant →", command=self._next)
+        self._btn_next = ttk.Button(nav, text="Suivant →", command=self._next, style="Raguia.TButton")
         self._btn_next.pack(side="right")
-        self._btn_save = ttk.Button(nav, text="Enregistrer & Demarrer", command=self._save)
+        self._btn_save = ttk.Button(nav, text="Enregistrer & Demarrer", command=self._save, style="Raguia.TButton")
         # Affiché seulement page 2
 
     def _show_step(self, step: int) -> None:
@@ -311,7 +390,7 @@ class SetupWizard:
         return self.result
 
 
-def run_wizard(api_base: str = "http://127.0.0.1:8000") -> dict | None:
+def run_wizard(api_base: str = DEFAULT_API_BASE) -> dict | None:
     """Lance le wizard et retourne la config, ou None si annule."""
     try:
         w = SetupWizard(api_base=api_base)
