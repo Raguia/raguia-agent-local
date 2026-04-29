@@ -53,6 +53,37 @@ def _safe_run(cmd: list[str]) -> None:
         pass
 
 
+def _remove_windows_autostart() -> None:
+    """Supprime les deux mécanismes d'auto-start Windows (registre + Startup)."""
+    # 1) Clé registre HKCU\...\Run
+    try:
+        import winreg  # type: ignore
+
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE,
+        )
+        try:
+            winreg.DeleteValue(key, "Raguia Agent")
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        pass
+
+    # 2) Raccourci Startup (compat ancien comportement)
+    try:
+        startup = Path(
+            os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
+        )
+        lnk = startup / "Raguia Agent.lnk"
+        if lnk.exists():
+            lnk.unlink()
+    except Exception:
+        pass
+
+
 class TrayStatus(str, Enum):
     IDLE    = "idle"
     SYNCING = "syncing"
@@ -250,10 +281,7 @@ class RaguiaTray:
                 # 1) Desactiver le demarrage automatique selon l'OS
                 try:
                     if os.name == "nt":
-                        startup = Path(os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"))
-                        lnk = startup / "Raguia Agent.lnk"
-                        if lnk.exists():
-                            lnk.unlink()
+                        _remove_windows_autostart()
                     elif sys.platform == "darwin":
                         plist = Path.home() / "Library" / "LaunchAgents" / "com.raguia.local.agent.plist"
                         uid = str(os.getuid()) if hasattr(os, "getuid") else ""

@@ -31,6 +31,13 @@ log = logging.getLogger(__name__)
 # Délai (secondes) accordé au processus courant pour se terminer avant que
 # le shell de remplacement ne tente le move/rename.
 _REPLACE_DELAY_S = 4
+_TRUSTED_DOWNLOAD_HOSTS = {
+    # Workflow release GitHub courant
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+}
 
 
 def _pending_path(suffix: str) -> Path:
@@ -45,6 +52,54 @@ def _current_app_bundle() -> Path:
                                   ^-- parent  ^-- parent  ^-- sys.executable
     """
     return Path(sys.executable).resolve().parent.parent.parent
+
+
+def _extract_allowed_hosts(update_info: dict, api_host: str) -> set[str]:
+    """Construit l'ensemble des hôtes de téléchargement autorisés.
+
+    - api_host est toujours autorisé.
+    - update_info["allowed_download_hosts"] peut étendre la liste.
+    - Les hôtes GitHub de release sont explicitement autorisés pour le workflow actuel.
+    """
+    allowed = set(_TRUSTED_DOWNLOAD_HOSTS)
+    if api_host:
+        allowed.add(api_host.lower())
+
+    raw = update_info.get("allowed_download_hosts")
+    if isinstance(raw, str):
+        for host in raw.split(","):
+            h = host.strip().lower()
+            if h:
+                allowed.add(h)
+    elif isinstance(raw, list):
+        for host in raw:
+            h = str(host or "").strip().lower()
+            if h:
+                allowed.add(h)
+    return allowed
+
+
+def _validate_download_chain_https_and_hosts(
+    responses: list[httpx.Response], allowed_hosts: set[str]
+) -> bool:
+    """Valide chaque URL de requête (redirects inclus): HTTPS + host autorisé."""
+    for resp in responses:
+        req_url = resp.request.url
+        scheme = (req_url.scheme or "").lower()
+        host = (req_url.host or "").lower()
+        if scheme != "https":
+            log.error(
+                "Mise a jour refusee : URL non HTTPS detectee (%s).",
+                str(req_url),
+            )
+            return False
+        if host not in allowed_hosts:
+            log.error(
+                "Mise a jour refusee : hote de telechargement non approuve (%s).",
+                host or "?",
+            )
+            return False
+    return True
 
 
 class AgentUpdater:
@@ -116,14 +171,19 @@ class AgentUpdater:
             log.error("Mise a jour refusee : checksum SHA256 manquante.")
             return False
 
-        # Validation minimale de confiance : HTTPS + même hôte que le portail
+        # Validation de confiance : HTTPS + hôte autorisé (portail, GitHub releases,
+        # et éventuellement hôtes additionnels envoyés par le portail).
         parsed_base = urlparse(self.client.api_base)
         parsed_dl = urlparse(download_url)
+        allowed_hosts = _extract_allowed_hosts(update_info, (parsed_base.hostname or ""))
         if parsed_dl.scheme != "https":
             log.error("Mise a jour refusee : URL de telechargement non HTTPS.")
             return False
-        if (parsed_dl.hostname or "").lower() != (parsed_base.hostname or "").lower():
-            log.error("Mise a jour refusee : source non approuvee.")
+        if (parsed_dl.hostname or "").lower() not in allowed_hosts:
+            log.error(
+                "Mise a jour refusee : source non approuvee (%s).",
+                (parsed_dl.hostname or "").lower() or "?",
+            )
             return False
 
         # ---- Téléchargement ----
@@ -143,12 +203,15 @@ class AgentUpdater:
             r = httpx.get(
                 download_url,
                 timeout=300.0,
-                follow_redirects=False,
+                follow_redirects=True,
                 trust_env=False,
             )
             r.raise_for_status()
         except Exception:
             log.exception("Echec du telechargement")
+            return False
+
+        if not _validate_download_chain_https_and_hosts([*r.history, r], allowed_hosts):
             return False
 
         # ---- Vérification SHA256 ----

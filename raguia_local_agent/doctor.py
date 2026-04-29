@@ -79,6 +79,37 @@ def _format_portal_check_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc!s}"[:300]
 
 
+def _windows_autostart_enabled() -> bool:
+    """Détecte l'auto-start Windows (registre HKCU Run ou Startup .lnk)."""
+    try:
+        import winreg  # type: ignore
+
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_READ,
+        )
+        try:
+            value, _ = winreg.QueryValueEx(key, "Raguia Agent")
+            if str(value or "").strip():
+                return True
+        except FileNotFoundError:
+            pass
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        pass
+
+    try:
+        startup = Path(
+            os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
+        )
+        return (startup / "Raguia Agent.lnk").is_file()
+    except Exception:
+        return False
+
+
 def run_doctor(cfg, agent) -> tuple[bool, str]:
     lines: list[str] = []
     has_error = False
@@ -131,8 +162,7 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
     # Autostart check
     try:
         if os.name == "nt":
-            startup = Path(os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"))
-            enabled = (startup / "Raguia Agent.lnk").is_file()
+            enabled = _windows_autostart_enabled()
         elif sys.platform == "darwin":
             enabled = (Path.home() / "Library" / "LaunchAgents" / "com.raguia.local.agent.plist").is_file()
         else:

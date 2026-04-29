@@ -35,7 +35,7 @@ Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.git
 4. L'assistant de configuration s'ouvre. Saisir l'URL du portail, coller le Jeton, choisir le dossier parent.
 5. Cliquer **Tester** → **Enregistrer & Démarrer**.
 
-L'agent s'inscrit automatiquement dans `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pour démarrer à chaque connexion de l'utilisateur (sans droits administrateur).
+L'agent s'inscrit automatiquement dans `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pour démarrer à chaque connexion de l'utilisateur (sans droits administrateur). Un ancien mode compatibilité via raccourci `Startup` peut aussi exister sur certains postes.
 
 ### 2.3 Procédure (macOS Apple Silicon)
 
@@ -59,7 +59,7 @@ L'agent crée automatiquement un LaunchAgent dans `~/Library/LaunchAgents/com.ra
 
 ### 3.1 Mise à jour via le menu tray (recommandée)
 
-L'agent vérifie l'endpoint `/api/portal/agent/version` toutes les 24 heures. Si une nouvelle version est disponible, un badge s'affiche dans le menu tray.
+L'agent vérifie l'endpoint `/api/portal/agent/version` toutes les 24 heures. Si une nouvelle version est disponible, un avertissement est affiché dans l'icône tray et l'information est visible dans les logs.
 
 Le client (ou vous à distance) fait :
 > Clic droit icône → **Vérifier / installer mise à jour** → Confirmer
@@ -69,6 +69,8 @@ L'agent :
 2. Vérifie l'empreinte SHA256.
 3. Spawne un processus shell détaché qui remplace le binaire après l'arrêt de l'agent.
 4. Redémarre automatiquement.
+
+Sécurité téléchargement : HTTPS obligatoire, redirections autorisées uniquement vers des hôtes approuvés (hôte portail, hôtes GitHub release, et éventuels hôtes explicitement autorisés par l'API).
 
 ### 3.2 Mise à jour manuelle
 
@@ -133,7 +135,7 @@ L'agent tourne en mode daemon pur, sans icône.
 
 ### L'agent ne se lance pas au démarrage
 
-- **Windows** : Vérifier `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → clé `Raguia Agent`. Si elle est absente, relancer l'agent manuellement une fois pour la recréer, ou l'ajouter à la main.
+- **Windows** : Vérifier d'abord `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → clé `Raguia Agent`. Sur certains anciens postes, vérifier aussi `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Raguia Agent.lnk`.
 - **macOS** : Vérifier `~/Library/LaunchAgents/com.raguia.local.agent.plist`. Si absent, relancer l'agent manuellement une fois. Pour le recharger sans redémarrer :
   ```bash
   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
@@ -147,7 +149,7 @@ Ou éditer directement `~/.raguia/config.yaml` et remplacer `agent_token`.
 
 ### Désactiver le démarrage automatique sans désinstaller
 
-- **Windows** : Supprimer la clé de registre `Raguia Agent` dans `HKCU\...\Run`, ou utiliser le Gestionnaire des tâches → onglet Démarrage.
+- **Windows** : Supprimer la clé de registre `Raguia Agent` dans `HKCU\...\Run`, et supprimer aussi (si présent) `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Raguia Agent.lnk`.
 - **macOS** :
   ```bash
   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
@@ -170,6 +172,7 @@ rm -rf ~/Library/LaunchAgents/com.raguia.local.agent.plist ~/.raguia
 ```powershell
 # Windows PowerShell
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Raguia Agent" -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Raguia Agent.lnk" -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$env:USERPROFILE\.raguia"
 ```
 
@@ -177,7 +180,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.raguia"
 
 Menu tray → **Exporter un bundle support** → transmettre le ZIP généré dans `~/.raguia/`.
 
-Les logs bruts se trouvent dans `~/.raguia/logs/`.
+Les logs bruts se trouvent dans `~/.raguia/agent.log` (et `agent.log.1`, `agent.log.2`, etc. pour la rotation).
 
 ---
 
@@ -185,7 +188,7 @@ Les logs bruts se trouvent dans `~/.raguia/logs/`.
 
 L'agent refuse toute mise à jour si :
 1. L'URL de téléchargement n'est pas en **HTTPS**.
-2. L'hôte de téléchargement est différent de l'hôte de l'API Raguia (protection contre les redirections malveillantes).
+2. La chaîne de redirection contient un hôte non approuvé.
 3. L'empreinte **SHA256** du binaire téléchargé ne correspond pas à celle annoncée par le portail.
 
 ---

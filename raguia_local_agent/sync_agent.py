@@ -327,7 +327,9 @@ class SyncAgent:
                     elapsed = time.time() - last_update_check
                     if elapsed >= self.cfg.auto_update_check_hours * 3600:
                         last_update_check = time.time()
-                        self.updater.check_and_log(AGENT_VERSION)
+                        has_update = self.updater.check_and_log(AGENT_VERSION)
+                        if has_update:
+                            self._emit("warning", "Mise a jour disponible (menu tray)")
                         self._check_token_expiry()
 
                 # --- Polling sync-status ---
