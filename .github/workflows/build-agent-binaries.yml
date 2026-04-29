@@ -68,6 +68,7 @@ jobs:
         run: pyinstaller raguia_agent.spec --noconfirm
 
       - name: Package macOS artifacts
+        shell: bash
         run: |
           ditto -c -k --sequesterRsrc --keepParent "dist/raguia-agent.app" "raguia-agent-macos-arm64.zip"
           python scripts/package_release_asset.py --source "raguia-agent-macos-arm64.zip" --target "raguia-agent-macos-arm64.zip"
