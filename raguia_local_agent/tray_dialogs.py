@@ -163,12 +163,13 @@ def confirm_git_pull_update(
 
 
 def confirm_agent_update(current_version: str, new_version: str) -> bool:
-    """Telechargement et execution du script serveur — demande confirmation."""
+    """Téléchargement du nouveau binaire — demande confirmation."""
     body = (
         f"Une mise a jour de l'agent est disponible.\n\n"
         f"Version installee : {current_version}\n"
-        f"Version proposee : {new_version}\n\n"
-        "Le script officiel sera telecharge depuis le serveur (HTTPS, hash verifie).\n"
+        f"Version proposee  : {new_version}\n\n"
+        "Le nouveau binaire sera telecharge depuis le serveur (HTTPS, hash SHA256 verifie).\n"
+        "L'agent va s'arreter puis redemarrer automatiquement.\n\n"
         "Continuer ?"
     )
     script = (

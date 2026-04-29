@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -13,11 +16,90 @@ import yaml
 from .api_client import validate_api_base
 from .secret_store import save_token
 
+log = logging.getLogger(__name__)
+
 
 def _detect_default_parent() -> str:
     home = Path.home()
     docs = home / "Documents"
     return str(docs) if docs.exists() else str(home)
+
+
+def _register_autostart() -> None:
+    """Enregistre le démarrage automatique au login (mode binaire gelé uniquement).
+
+    Conditionnel sur ``sys.frozen`` : en mode source Python (développement)
+    l'agent est lancé manuellement, pas besoin de registre/plist.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    exe = sys.executable
+
+    if sys.platform == "win32":
+        # Clé de registre HKCU Run — ne nécessite pas de droits admin
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            winreg.SetValueEx(key, "Raguia Agent", 0, winreg.REG_SZ, f'"{exe}"')
+            winreg.CloseKey(key)
+            log.info("Autostart Windows enregistre : %s", exe)
+        except Exception as e:
+            log.warning("Impossible d'enregistrer le demarrage auto Windows : %s", e)
+
+    elif sys.platform == "darwin":
+        # LaunchAgent plist pointant directement vers le binaire/l'app bundle
+        try:
+            plist_dir = Path.home() / "Library" / "LaunchAgents"
+            plist_dir.mkdir(parents=True, exist_ok=True)
+            plist_path = plist_dir / "com.raguia.local.agent.plist"
+
+            # sys.executable est le binaire dans .app/Contents/MacOS/ ;
+            # on ouvre le .app bundle pour un démarrage propre via open(1).
+            # Si ce n'est pas un .app, on lance l'exécutable directement.
+            app_bundle = Path(exe).parent.parent.parent
+            if app_bundle.suffix == ".app" and app_bundle.is_dir():
+                program_args = ["<string>/usr/bin/open</string>", f"<string>{app_bundle}</string>"]
+                program_args_xml = "\n    ".join(program_args)
+            else:
+                program_args_xml = f"<string>{exe}</string>"
+
+            plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.raguia.local.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    {program_args_xml}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+</dict>
+</plist>
+"""
+            plist_path.write_text(plist_content, encoding="utf-8")
+            plist_path.chmod(0o644)
+
+            uid = str(os.getuid()) if hasattr(os, "getuid") else ""
+            if uid:
+                subprocess.run(
+                    ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+                    capture_output=True,
+                    timeout=10,
+                )
+            log.info("Autostart macOS enregistre : %s", plist_path)
+        except Exception as e:
+            log.warning("Impossible d'enregistrer le demarrage auto macOS : %s", e)
 
 
 class SetupWizard:
@@ -208,13 +290,13 @@ class SetupWizard:
         }
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, allow_unicode=True)
-            
-        # Securite : restreindre l'acces au fichier (contient un secret)
+
         try:
-            import os
             os.chmod(config_path, 0o600)
         except Exception:
             pass
+
+        _register_autostart()
 
         self.result = data
         messagebox.showinfo(

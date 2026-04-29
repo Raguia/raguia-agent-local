@@ -1,170 +1,212 @@
-# Guide de Déploiement & Administration - Agent Local Raguia
+# Guide d'administration — Agent Local Raguia
 
-Ce document fournit la documentation complète pour déployer, administrer et dépanner l'agent local Raguia chez un client.
-
----
-
-## 1. Vue d'ensemble de l'installation
-
-Les scripts d'installation (`install.sh` / `install.bat`) ont été conçus pour être **totalement autonomes, simples et fiables**. En une seule commande, l'installeur effectue pour vous :
-
-1. **Détection de l'OS** (Windows, macOS, Linux).
-2. **Installation de Git** si absent (via `winget`/`choco` sur Windows, `brew`/`apt`/`dnf`... sur Unix).
-3. **Installation de uv**, un gestionnaire Python ultra-rapide.
-4. **Installation de Python 3.11** de manière isolée et invisible pour votre système.
-5. **Création de la configuration** locale (`raguia_agent.yaml`).
-6. **Création d'un environnement virtuel** isolé (`venv`).
-7. **Installation des dépendances** logicielles de l'agent.
-8. **Test de la connexion API** direct avec le portail client.
-9. **Configuration du démarrage automatique** (LaunchAgent, raccourci Démarrage, ou service systemd).
-
-### Prérequis Systèmes Minimaux
-Pour que l'installation automatique se déroule sans encombre, vérifiez ces prérequis :
-- **Connexion Internet active** : le script doit pouvoir joindre Github, astral.sh (uv) et l'API Raguia.
-- **Utilitaires de base** : `PowerShell` sous Windows (intégré par défaut) ou `curl` sous macOS/Linux.
-- **Droits Administrateur / Sudo** : requis **uniquement** si `git` n'est pas déjà installé sur la machine.
+Ce document est destiné aux administrateurs techniques qui déploient, configurent et maintiennent l'agent chez un client.
 
 ---
 
-## 2. Procédure d'installation (Pas-à-Pas)
+## 1. Architecture de distribution
 
-### Étape 1 : Récupérer l'agent sur la machine
+L'agent est distribué sous forme de **binaires natifs compilés par PyInstaller** (aucune dépendance Python, Git ou uv requise côté client). Le client télécharge un seul fichier et double-clique.
 
-**Option A : Par Git (Fortement recommandée pour les mises à jour automatiques)**
-Ouvrez votre terminal (Terminal sur macOS/Linux, PowerShell ou Invite de commandes sur Windows) :
+| Plateforme | Artefact | Taille indicative |
+|---|---|---|
+| Windows 10/11 x64 | `raguia-agent-windows.exe` | ~60-80 Mo |
+| macOS Apple Silicon (M1/M2/M3) | `raguia-agent-macos-arm64.zip` | ~70-90 Mo |
+
+Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.github/workflows/build-agent-binaries.yml`. Le portail lit les variables `LOCAL_AGENT_DOWNLOAD_URL`, `LOCAL_AGENT_SHA256` et `LOCAL_AGENT_VERSION` pour exposer le lien de téléchargement et permettre les mises à jour automatiques.
+
+---
+
+## 2. Déploiement chez un client
+
+### 2.1 Prérequis
+
+- Connexion internet (HTTPS vers le portail Raguia).
+- Un Jeton JWT agent généré depuis le portail (section **Paramètres → Agent de synchronisation**).
+- Aucun autre prérequis logiciel.
+
+### 2.2 Procédure (Windows)
+
+1. Transmettre le lien de téléchargement `raguia-agent-windows.exe` au client (ou le déposer vous-même sur la machine).
+2. Double-clic sur le `.exe`.
+3. **Si SmartScreen s'affiche** ("Windows a protégé votre ordinateur") :
+   - Cliquer **Informations supplémentaires** → **Exécuter quand même**.
+   - Ce message est normal pour un exécutable sans signature Authenticode grand public. Il disparaîtra si vous investissez dans un certificat de signature de code (~100 €/an).
+4. L'assistant de configuration s'ouvre. Saisir l'URL du portail, coller le Jeton, choisir le dossier parent.
+5. Cliquer **Tester** → **Enregistrer & Démarrer**.
+
+L'agent s'inscrit automatiquement dans `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pour démarrer à chaque connexion de l'utilisateur (sans droits administrateur).
+
+### 2.3 Procédure (macOS Apple Silicon)
+
+1. Transmettre le `.zip` au client.
+2. Dézipper → faire glisser `raguia-agent.app` dans le dossier `Applications` (recommandé) ou `Documents`.
+3. **Gatekeeper bloque le premier lancement** car l'app n'est pas notarisée. Deux options :
+   - **Option utilisateur** : Clic droit sur l'app → **Ouvrir** → **Ouvrir** dans le dialogue d'alerte.
+   - **Option IT (recommandée)** : Exécuter en terminal une seule fois avant de remettre la main au client :
+     ```bash
+     xattr -d com.apple.quarantine /Applications/raguia-agent.app
+     ```
+   Après ce retrait du flag de quarantaine, l'app s'ouvre normalement par double-clic.
+4. L'assistant s'ouvre. Saisir l'URL du portail, coller le Jeton, choisir le dossier parent.
+5. **Enregistrer & Démarrer**.
+
+L'agent crée automatiquement un LaunchAgent dans `~/Library/LaunchAgents/com.raguia.local.agent.plist` pour démarrer au login de l'utilisateur.
+
+---
+
+## 3. Mise à jour de l'agent
+
+### 3.1 Mise à jour via le menu tray (recommandée)
+
+L'agent vérifie l'endpoint `/api/portal/agent/version` toutes les 24 heures. Si une nouvelle version est disponible, un badge s'affiche dans le menu tray.
+
+Le client (ou vous à distance) fait :
+> Clic droit icône → **Vérifier / installer mise à jour** → Confirmer
+
+L'agent :
+1. Télécharge le nouveau binaire depuis `LOCAL_AGENT_DOWNLOAD_URL`.
+2. Vérifie l'empreinte SHA256.
+3. Spawne un processus shell détaché qui remplace le binaire après l'arrêt de l'agent.
+4. Redémarre automatiquement.
+
+### 3.2 Mise à jour manuelle
+
+Téléchargez la nouvelle version et remplacez manuellement le fichier :
+- Windows : fermez l'agent (menu tray → **Quitter**) puis remplacez `raguia-agent-windows.exe`.
+- macOS : quittez l'agent puis remplacez le `.app` (glisser-déposer depuis le Finder en confirmant le remplacement).
+
+Relancez ensuite l'agent normalement.
+
+### 3.3 Publication d'une release (côté vous)
 
 ```bash
-winget install --id Git.Git -e --source winget   
+# Tagger la release (déclenche le build CI automatiquement)
+git tag v0.3.0
+git push origin v0.3.0
 ```
+
+Le CI produit les artefacts et crée une GitHub Release. Mettez à jour dans votre `.env` :
+
 ```bash
-git clone https://github.com/ValMtp3/raguia-agent-local.git
-cd raguia-agent-local
+LOCAL_AGENT_VERSION=0.3.0
+LOCAL_AGENT_DOWNLOAD_URL=https://github.com/ValMtp3/raguia-agent-local/releases/download/v0.3.0/raguia-agent-windows.exe
+LOCAL_AGENT_SHA256=<valeur du fichier .sha256>
 ```
 
-**Option B : Par téléchargement manuel (Si Git est bloqué et irrécupérable)**
-1. Téléchargez le code source en ZIP : [Télécharger Raguia Agent ZIP](https://github.com/ValMtp3/raguia-agent-local/archive/refs/heads/main.zip).
-2. Extrayez le ZIP dans un dossier (ex: `Documents/raguia-agent-local`).
-3. Ouvrez un terminal dans ce dossier extrait.
-
-### Étape 2 : Lancer l'installation
-
-*Astuce : Si vous lancez le script sans aucun argument, il vous posera les questions de manière interactive (mode, slug, jeton, dossier parent).*
-
-**Sous macOS / Linux :**
-```bash
-./install.sh prod "slug-de-votre-client" "VOTRE_JETON_AGENT"
-```
-*(Si vous êtes en phase de développement local avec le backend sur votre machine : `./install.sh local ...`)*
-
-**Sous Windows (PowerShell ou Invite de commandes) :**
-```powershell
-.\install.bat prod "slug-de-votre-client" "VOTRE_JETON_AGENT"
-```
-
-**Que se passe-t-il ensuite ?**
-Le script s'occupe de tout. À la fin, s'il affiche **"Connexion réussie !"**, l'agent est pleinement fonctionnel et programmé pour démarrer en arrière-plan à chaque ouverture de session.
+Répétez pour macOS si vous gérez les deux plateformes (deux paires URL/SHA256, une par OS — à discriminer côté portail si nécessaire).
 
 ---
 
-## 3. Scénarios alternatifs et Fallbacks (Quand ça coince)
+## 4. Configuration
 
-Malgré l'automatisation, des politiques de sécurité d'entreprise peuvent bloquer l'installation. Voici comment pallier toutes les éventualités.
+### 4.1 Fichier de configuration
 
-### Cas A : L'installation automatique de Git échoue
-Si la machine bloque l'installation automatique de Git (pas de droits admin, pas de gestionnaire de paquets, Windows Store désactivé) :
-1. Téléchargez et installez Git manuellement :
-   - **Windows** : [Télécharger Git pour Windows](https://git-scm.com/download/win)
-   - **macOS** : Tapez `xcode-select --install` dans le terminal.
-   - **Linux** : Utilisez `sudo apt install git` ou équivalent.
-2. Relancez simplement `install.sh` ou `install.bat`.
-
-### Cas B : L'installation de `uv` échoue (Proxy / Réseau d'entreprise strict)
-Si `curl` ou `powershell` n'arrivent pas à télécharger `uv` :
-1. Téléchargez le binaire `uv` manuellement depuis la [page des releases Astral](https://github.com/astral-sh/uv/releases) et placez-le dans un dossier reconnu par votre `PATH`.
-2. Relancez l'installeur.
-
-### Cas C : Vous n'avez absolument aucun droit d'installation
-Si vous êtes sur une machine verrouillée où l'installation système est impossible :
-- Demandez à l'IT de fournir **Git** et **Python 3.11** en version "Portable".
-- L'agent fonctionnera de manière portable tant que ces deux exécutables sont accessibles dans le terminal.
-
----
-
-## 4. Dépannage & Erreurs Courantes
-
-### Erreurs pendant l'installation
-- **"git est introuvable après tentative automatique"** : Suivez le **Cas A** ci-dessus. L'installeur a échoué à cause de restrictions de sécurité OS.
-- **"uv introuvable après installation"** : Le téléchargement a été bloqué par un proxy/antivirus. Suivez le **Cas B**.
-- **"Échec de connexion au portail"** : Le jeton JWT est invalide, expiré, mal copié, ou l'URL de l'API est bloquée par le réseau client.
-  - Vérifiez la validité de "VOTRE_JETON_AGENT".
-  - Vérifiez que l'URL (`https://raguia.valentin-fiess.fr`) n'est pas bloquée par le pare-feu.
-
-### Erreurs au fonctionnement quotidien de l'agent
-- **Erreurs 401/403 (Non autorisé) dans les logs** :
-  - Soit le token a expiré. Mettez-le à jour via l'icône de l'application dans la barre des tâches -> **"Mettre à jour le jeton JWT..."**.
-  - Soit une variable système `RAGUIA_AGENT_TOKEN` sur votre machine écrase le token de configuration. Tapez `echo $RAGUIA_AGENT_TOKEN` pour vérifier.
-- **"ModuleNotFoundError" ou "python3 introuvable"** :
-  - Le dossier virtuel `venv` a été accidentellement corrompu ou supprimé.
-  - **Solution simple** : Relancez `install.sh` / `install.bat`. Il recréera l'environnement sans casser votre configuration.
-- **L'agent ne se lance plus au démarrage de l'ordinateur** :
-  - Relancez le script d'installation, il répare le raccourci d'auto-démarrage.
-  - Vous pouvez aussi vérifier le dossier de démarrage (Windows : `Win+R` -> `shell:startup`).
-
----
-
-## 5. Commandes de Contrôle Quotidien
-
-Les scripts d'action résident dans le sous-dossier caché `**.raguia_agent/**`. 
-
-Depuis la racine du dossier `raguia-agent-local/` :
-
-| Action                | macOS / Linux      | Windows            |
-| --------------------- | ------------------ | ------------------ |
-| Lancer l'agent        | `./.raguia_agent/start.sh` | `.\.raguia_agent\start.bat` |
-| Tester la connexion   | `./.raguia_agent/test.sh`  | `.\.raguia_agent\test.bat`  |
-| Arrêter l'agent       | `./.raguia_agent/stop.sh`  | `.\.raguia_agent\stop.bat`  |
-
-### Interface Utilisateur (Menu Tray)
-Lorsque l'agent tourne, une icône apparaît dans la zone de notification (Barre des tâches) :
-- **Vérifier / Installer une mise à jour** : Télécharge les nouveautés de Github et met à jour l'agent instantanément.
-- **Lancer un diagnostic (Doctor)** : Affiche l'état de santé du programme.
-- **Exporter un bundle support** : Regroupe les logs dans un fichier ZIP, idéal pour le support technique.
-- **Mettre à jour le jeton JWT** : Permet de changer le jeton sans utiliser le terminal.
-- **Désinstaller l'agent** : Arrête l'agent, supprime l'auto-démarrage et nettoie les fichiers. Le dossier `RAGUIA` contenant les documents du client **n'est pas supprimé**.
-
-### Forcer une mise à jour manuelle (Ligne de commande)
-Si vous avez installé via Git (Option A), vous pouvez mettre à jour le code sans utiliser l'interface graphique :
-- **macOS / Linux** : `./update.sh`
-- **Windows** : `update.bat`
-
----
-
-## 6. Configuration Avancée et Sécurité
-
-### Le fichier `raguia_agent.yaml`
-Toute la configuration de l'agent est stockée dans `.raguia_agent/raguia_agent.yaml` :
+La configuration est stockée dans `~/.raguia/config.yaml` (créé par le wizard) :
 
 ```yaml
-api_base: "https://raguia.valentin-fiess.fr"
-client_slug: "client-acme"
-agent_token: "eyJhbGci..."
-watch_parent: "/Users/nom/Documents"
+api_base: "https://raguia.monentreprise.com"
+agent_token: "eyJhbGci..."          # ou sentinel keyring si secure_token_storage: true
+watch_parent: "/Users/prenom/Documents"
 root_folder_name: "RAGUIA"
-runtime_env: "prod"
-secure_token_storage: true  # (Recommandé) Tente de stocker le token crypté dans le trousseau OS
-structured_logging: true    # Exporte les logs au format JSON pour une meilleure traçabilité
+secure_token_storage: false         # true = stocke le token dans le trousseau OS
+structured_logging: true            # logs JSON (recommandé en prod)
+auto_update: true
+auto_update_check_hours: 24.0
 ```
 
-*(L'agent ignore par défaut les fichiers temporaires et systèmes comme `~$*.docx` ou `.tmp` pour éviter d'envoyer des déchets sur le portail).*
+### 4.2 Variable d'environnement
 
-### Sécurité de la chaîne de mise à jour
-L'agent dispose d'une sécurité intégrée pour ses mises à jour automatiques. Une mise à jour provenant du backend est refusée si :
+Le Jeton peut être injecté via la variable d'environnement `RAGUIA_AGENT_TOKEN` (prioritaire sur le fichier YAML). Pratique pour les déploiements MDM/GPO sans passer par le wizard.
+
+### 4.3 Démarrage sans interface tray (mode serveur)
+
+Pour un déploiement sur un serveur sans affichage :
+```bash
+raguia-agent --no-tray
+```
+L'agent tourne en mode daemon pur, sans icône.
+
+---
+
+## 5. Dépannage
+
+### L'agent ne se lance pas au démarrage
+
+- **Windows** : Vérifier `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → clé `Raguia Agent`. Si elle est absente, relancer l'agent manuellement une fois pour la recréer, ou l'ajouter à la main.
+- **macOS** : Vérifier `~/Library/LaunchAgents/com.raguia.local.agent.plist`. Si absent, relancer l'agent manuellement une fois. Pour le recharger sans redémarrer :
+  ```bash
+  launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
+  ```
+
+### Erreur 401 / Jeton expiré
+
+Menu tray → **Mettre à jour le jeton JWT** → coller le nouveau jeton depuis le portail.
+
+Ou éditer directement `~/.raguia/config.yaml` et remplacer `agent_token`.
+
+### Désactiver le démarrage automatique sans désinstaller
+
+- **Windows** : Supprimer la clé de registre `Raguia Agent` dans `HKCU\...\Run`, ou utiliser le Gestionnaire des tâches → onglet Démarrage.
+- **macOS** :
+  ```bash
+  launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
+  ```
+
+### Désinstallation complète
+
+Menu tray → **Désinstaller l'agent**. Cette action :
+- Arrête l'agent.
+- Supprime l'entrée de démarrage automatique (registre Windows ou LaunchAgent macOS).
+- Supprime `~/.raguia/` (config, logs, états).
+- **Ne supprime pas** le dossier `RAGUIA` contenant les documents du client.
+
+Pour une désinstallation manuelle (si le tray n'est plus accessible) :
+```bash
+# macOS
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
+rm -rf ~/Library/LaunchAgents/com.raguia.local.agent.plist ~/.raguia
+```
+```powershell
+# Windows PowerShell
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Raguia Agent" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$env:USERPROFILE\.raguia"
+```
+
+### Exporter les logs pour le support
+
+Menu tray → **Exporter un bundle support** → transmettre le ZIP généré dans `~/.raguia/`.
+
+Les logs bruts se trouvent dans `~/.raguia/logs/`.
+
+---
+
+## 6. Sécurité de la chaîne de mise à jour
+
+L'agent refuse toute mise à jour si :
 1. L'URL de téléchargement n'est pas en **HTTPS**.
-2. L'hôte de téléchargement est différent de celui de l'API (protection contre les injections).
-3. L'empreinte de sécurité **SHA256** ne correspond pas.
+2. L'hôte de téléchargement est différent de l'hôte de l'API Raguia (protection contre les redirections malveillantes).
+3. L'empreinte **SHA256** du binaire téléchargé ne correspond pas à celle annoncée par le portail.
 
-### Désactivation manuelle du démarrage automatique
-Si vous souhaitez empêcher l'agent de se lancer tout seul (sans pour autant le désinstaller) :
-- **Windows** : Supprimez le raccourci `Raguia Agent` dans votre dossier Démarrage (`Win+R` -> `shell:startup`).
-- **macOS** : `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.raguia.local.agent.plist"`
-- **Linux** : `systemctl --user disable --now raguia-agent.service`
+---
+
+## 7. Workflow développement (usage interne uniquement)
+
+Les scripts `install.sh` / `install.bat` et `update.sh` / `update.bat` restent présents dans le dépôt pour le **workflow de développement local**. Ils ne sont plus distribués aux clients.
+
+Pour travailler sur l'agent en local :
+```bash
+cd raguia_local_agent
+uv venv .venv --python 3.11
+source .venv/bin/activate   # ou .venv\Scripts\activate.bat sur Windows
+uv pip install -e ".[full]"
+python -m raguia_local_agent
+```
+
+Pour builder un binaire en local (test du spec PyInstaller) :
+```bash
+cd raguia_local_agent
+pip install pyinstaller
+pyinstaller raguia_agent.spec
+# → dist/raguia-agent.exe (Windows) ou dist/raguia-agent.app (macOS)
+```

@@ -94,7 +94,13 @@ def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
                 sys.exit(0)
         except Exception as e:
             print(f"Wizard indisponible : {e}")
-            print("Creez ~/.raguia/config.yaml manuellement.")
+            if getattr(sys, "frozen", False):
+                print("Creez ~/.raguia/config.yaml manuellement.")
+            else:
+                print(
+                    "Creez ~/.raguia/config.yaml manuellement, "
+                    "ou relancez depuis le clone Git apres 'pip install -e \".[tray]\"'."
+                )
             sys.exit(1)
     try:
         return load_config(cfg_path)

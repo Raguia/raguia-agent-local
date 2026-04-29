@@ -366,29 +366,78 @@ class RaguiaTray:
                 )
 
         def run_update_ui(icon, item):
-            """git pull + pip install dans le clone (identique a update.sh / pas de telechargement distant)."""
+            """Vérifie et installe la mise à jour de l'agent.
+
+            Mode binaire gelé (distribution client) : télécharge le nouveau binaire
+            depuis le portail, vérifie le SHA256, puis spawne un processus de
+            remplacement et quitte l'agent.
+
+            Mode source Python (développement) : git pull + pip install dans le clone.
+            """
 
             def work() -> None:
                 from . import __version__
+
+                current_version = __version__.strip()
+
+                # --- Récupérer les infos de version depuis le portail ---
+                try:
+                    data = self._agent.updater.client.agent_version_info()
+                except Exception as e:
+                    tray_dialogs.show_message(
+                        "Mise à jour — erreur",
+                        f"Impossible de contacter le portail :\n{e}",
+                        kind="error",
+                    )
+                    return
+
+                latest_version = str(data.get("version") or "").strip()
+
+                # ----------------------------------------------------------------
+                # Mode binaire gelé (PyInstaller, distribution client)
+                # ----------------------------------------------------------------
+                if getattr(sys, "frozen", False):
+                    if not latest_version or latest_version == current_version:
+                        tray_dialogs.show_message(
+                            "Mise à jour",
+                            f"L'agent est à jour (version {current_version}).",
+                            kind="info",
+                        )
+                        return
+
+                    if not tray_dialogs.confirm_agent_update(
+                        current_version, latest_version
+                    ):
+                        return
+
+                    ok = self._agent.updater.perform_update(data)
+                    if ok:
+                        tray_dialogs.show_message(
+                            "Mise à jour",
+                            "Téléchargement terminé. L'agent va redémarrer.",
+                            kind="info",
+                        )
+                        quit_agent(icon, item)
+                    else:
+                        tray_dialogs.show_message(
+                            "Mise à jour — erreur",
+                            "La mise à jour a échoué. Consultez les logs pour le détail.",
+                            kind="error",
+                        )
+                    return
+
+                # ----------------------------------------------------------------
+                # Mode source Python (développement) : git pull + pip install
+                # ----------------------------------------------------------------
                 from .local_git_update import run_local_git_update
 
                 info_parts: list[str] = []
-                try:
-                    data = self._agent.updater.client.agent_version_info()
-                    srv = data.get("version")
-                    if srv:
-                        info_parts.append(f"Version annoncée par le serveur : {srv}")
-                except Exception as e:
-                    info_parts.append(
-                        "Serveur (info seulement) : indisponible — "
-                        f"{e!s}"[:180]
-                    )
-                info_parts.append(f"Version du paquet actuel : {__version__.strip()}")
+                if latest_version:
+                    info_parts.append(f"Version annoncée par le serveur : {latest_version}")
+                info_parts.append(f"Version du paquet actuel : {current_version}")
                 info_block = "\n".join(info_parts)
 
-                if not tray_dialogs.confirm_git_pull_update(
-                    __version__.strip(), info_block
-                ):
+                if not tray_dialogs.confirm_git_pull_update(current_version, info_block):
                     return
 
                 ok, msg = run_local_git_update()
