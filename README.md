@@ -6,18 +6,9 @@ Il a été conçu pour être totalement invisible au quotidien : pas de fenêtre
 
 ---
 
-## Installation en 2 étapes
+## Installation en 3 étapes
 
-### Étape 1 — Récupérer votre Jeton sur le portail
-
-Le Jeton est une clé de sécurité unique qui autorise l'agent à envoyer des documents sur votre espace.
-
-1. Connectez-vous à votre **Portail Raguia**.
-2. Allez dans l'onglet **Paramètres**.
-3. Dans la section **Agent de synchronisation**, cliquez sur **Générer un nouveau jeton**.
-4. Copiez ce texte, gardez-le sous la main.
-
-### Étape 2 — Télécharger et lancer l'agent
+### Étape 1 — Télécharger l'agent
 
 Votre administrateur vous a transmis un lien de téléchargement, ou vous le trouvez sur votre portail.
 
@@ -33,12 +24,19 @@ Votre administrateur vous a transmis un lien de téléchargement, ou vous le tro
 xattr -d com.apple.quarantine raguia-agent.app
 ```
 
-Une fenêtre d'assistant s'ouvre au premier lancement et vous pose 3 questions :
+### Étape 2 — Configurer l'agent (premier lancement)
+
+Une fenêtre d'assistant s'ouvre automatiquement au premier lancement. Elle vous pose 3 questions :
+
 1. **URL du portail** : l'adresse de votre espace Raguia (ex: `https://raguia.monentreprise.com`).
-2. **Jeton** : collez le jeton copié à l'étape 1.
+2. **Slug client** : l'identifiant court de votre organisation (ex: `entreprise-demo`), ainsi que votre **mot de passe portail**.
 3. **Dossier** : choisissez où créer le dossier `RAGUIA` (par défaut dans vos `Documents`).
 
-Cliquez sur **Tester** puis **Enregistrer & Démarrer**. C'est tout.
+Cliquez sur **Tester la connexion** pour vérifier que tout fonctionne, puis sur **Enregistrer & Démarrer**. C'est tout.
+
+> Votre mot de passe est utilise uniquement lors de la connexion et n'est jamais stocke sur votre machine.
+
+### Étape 3 — Démarrage automatique
 
 L'agent démarrera automatiquement à chaque ouverture de session, sans que vous ayez à faire quoi que ce soit.
 
@@ -54,7 +52,7 @@ Rien de grave. L'agent se met en pause. Dès le rallumage, il détecte automatiq
 
 **Que se passe-t-il si je change d'ordinateur ?**
 1. Téléchargez l'agent sur le nouvel ordinateur.
-2. Reconnectez-le avec votre Jeton (le même ou un nouveau depuis le portail).
+2. Au premier lancement, saisissez de nouveau l'URL du portail, votre slug et votre mot de passe.
 3. Déplacez vos documents dans le nouveau dossier `RAGUIA`.
 
 ---
@@ -67,17 +65,17 @@ Une fois lancé, l'agent s'installe discrètement dans votre barre des tâches (
 |---|---|
 | Vert | Tout va bien, l'agent est actif |
 | Bleu | Envoi de documents en cours |
-| Orange | Un fichier est bloqué (souvent ouvert dans Word/Excel) ou le Jeton expire bientôt |
-| Rouge | Erreur de connexion ou Jeton expiré |
+| Orange | Un fichier est bloque (souvent ouvert dans Word/Excel) ou la session expire bientot |
+| Rouge | Erreur de connexion ou session expiree |
 
 **Clic droit sur l'icône :**
 
 - **Ouvrir le dossier RAGUIA** — raccourci rapide vers vos documents.
 - **Synchroniser maintenant** — force l'envoi immédiat.
+- **Se connecter / Reconnecter…** — saisissez de nouveau votre slug et mot de passe (apres expiration de session ou changement de mot de passe).
 - **Lancer un diagnostic** — vérifie l'état de l'agent et affiche un résumé simple.
-- **Exporter un bundle support** — génère un fichier ZIP pour l'assistance (ne contient pas votre Jeton en clair).
+- **Exporter un bundle support** — genere un fichier ZIP pour l'assistance (ne contient pas votre mot de passe).
 - **Vérifier / installer mise à jour** — télécharge et installe la nouvelle version si disponible.
-- **Mettre à jour le jeton JWT** — permet de coller un nouveau Jeton sans relancer l'agent.
 - **Désinstaller l'agent** — arrête l'agent, supprime l'auto-démarrage et nettoie les fichiers locaux. Le dossier `RAGUIA` et vos documents ne sont pas touchés.
 
 ---
@@ -87,8 +85,13 @@ Une fois lancé, l'agent s'installe discrètement dans votre barre des tâches (
 **Un fichier déposé n'apparaît pas sur le portail**
 Vérifiez la couleur de l'icône. Si le fichier est un `.docx` ou `.xlsx` encore ouvert dans Office, c'est normal : l'agent attend que vous l'ayez fermé pour l'envoyer en version complète.
 
-**L'icône est rouge**
-Vérifiez votre connexion internet. Si elle fonctionne, votre Jeton a probablement expiré. Générez-en un nouveau depuis le portail et collez-le via **Clic droit → Mettre à jour le jeton JWT**.
+**L'icone est rouge**
+Verifiez votre connexion internet. Si elle fonctionne, votre session a probablement expire. Faites un **clic droit → Se connecter / Reconnecter…** et saisissez de nouveau votre slug et votre mot de passe portail.
+
+**La connexion échoue au premier lancement (Windows)**
+- Vérifiez que l'URL du portail commence bien par `https://` et ne contient pas de chemin de page (ex: pas `https://monportail.com/portal/mon-entreprise`, mais `https://monportail.com`).
+- Si votre réseau d'entreprise utilise un proxy, définissez la variable d'environnement `RAGUIA_TRUST_ENV=1` avant de lancer l'agent pour que les paramètres proxy Windows soient respectés.
+- Si Windows Defender bloque l'exe au démarrage, autorisez-le manuellement dans les paramètres de sécurité.
 
 **Le support me demande un diagnostic**
 Clic droit sur l'icône → **Lancer un diagnostic**, puis **Exporter un bundle support**. Transmettez le fichier ZIP généré.

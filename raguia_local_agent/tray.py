@@ -3,8 +3,8 @@
 Etats :
   idle     -> cercle vert  (tout va bien)
   syncing  -> cercle bleu  (upload en cours)
-  warning  -> cercle orange (token expire bientot, fichiers bloques)
-  error    -> cercle rouge  (erreur connexion, token expire)
+  warning  -> cercle orange (session expire bientot, fichiers bloques)
+  error    -> cercle rouge  (erreur connexion, session expiree)
   stopped  -> cercle gris   (agent arrete)
 
 Necessite : pystray>=0.19, Pillow>=10
@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from .sync_agent import SyncAgent
 
 from . import tray_dialogs
-from .api_client import validate_api_base
+from .api_client import http_response_detail, portal_agent_login, validate_api_base
 from .config import APP_DATA_DIR
 from .doctor import run_doctor
 from .logging_utils import export_support_bundle
@@ -94,7 +95,7 @@ def _remove_windows_autostart() -> None:
 def _resolve_agent_config_path() -> Path:
     cfg_path = os.environ.get("RAGUIA_AGENT_CONFIG")
     if cfg_path:
-        return Path(cfg_path)
+        return Path(cfg_path).expanduser()
     return Path.home() / ".raguia" / "config.yaml"
 
 
@@ -481,52 +482,80 @@ class RaguiaTray:
             except Exception:
                 pass
 
-        def update_jwt(icon, item):
+        def reconnect_portal(icon, item):
             try:
                 import yaml
             except Exception:
                 self._on_agent_status(TrayStatus.ERROR, "PyYAML indisponible")
                 tray_dialogs.show_message(
-                    "Mise a jour JWT impossible",
+                    "Connexion portail impossible",
                     "Le module PyYAML est indisponible.",
                     kind="error",
                 )
                 return
 
             def work() -> None:
-                self._begin_busy("Mise a jour du jeton JWT...")
+                self._begin_busy("Connexion portail...")
                 try:
-                    self._set_busy_message("Ouverture de la fenetre de saisie JWT...")
-                    new_token = tray_dialogs.prompt_agent_token()
-                    if new_token is None:
+                    self._set_busy_message("Saisie des identifiants portail...")
+                    creds = tray_dialogs.prompt_portal_login()
+                    if creds is None:
                         tray_dialogs.show_message(
-                            "Mise a jour JWT annulee",
-                            "Aucun nouveau jeton n'a ete saisi.",
+                            "Connexion annulee",
+                            "Aucune information de connexion n'a ete saisie.",
                             kind="info",
                         )
                         return
-                    new_token = new_token.strip()
-                    if not new_token:
-                        tray_dialogs.show_message(
-                            "Jeton vide",
-                            "Aucun jeton saisi.",
-                            kind="warning",
-                        )
-                        return
+                    slug, password = creds
 
+                    self._set_busy_message("Connexion au portail...")
                     old_token = self._agent.cfg.agent_token
-                    self._agent.update_agent_token(new_token)
-                    self._set_busy_message("Verification du nouveau jeton...")
+
+                    # Etape 1 : authentification aupres du portail.
+                    # Toute erreur ici signifie de mauvais identifiants ou reseau
+                    # inaccessible -> connexion abandonnee.
                     try:
-                        self._agent.client.sync_status()
+                        payload = portal_agent_login(self._agent.cfg.api_base, slug, password)
+                        new_token = str(payload.get("agent_access_token") or "").strip()
+                        if not new_token:
+                            raise ValueError("Le portail n'a pas retourne de session agent.")
                     except Exception as e:
-                        self._agent.update_agent_token(old_token)
+                        detail = http_response_detail(e.response) if hasattr(e, "response") else str(e)  # type: ignore[attr-defined]
                         tray_dialogs.show_message(
-                            "Jeton invalide",
-                            f"Le jeton n'a pas ete accepte:\n{e}",
+                            "Connexion refusee",
+                            f"Echec de connexion portail:\n{detail}",
                             kind="error",
                         )
                         return
+
+                    # Etape 2 : session obtenue -> activation en memoire.
+                    self._agent.update_agent_token(new_token)
+
+                    # Etape 3 : verification que le portail accepte cette session.
+                    # On distingue les erreurs :
+                    #   401 -> session invalide cote serveur : on restaure l'ancienne.
+                    #   autre (reseau, 500...) -> la session peut quand meme etre valide,
+                    #   on la sauvegarde et on previent l'utilisateur.
+                    _sync_warning: str | None = None
+                    try:
+                        self._agent.client.sync_status()
+                    except Exception as _se:
+                        _is_401 = (
+                            hasattr(_se, "response")
+                            and getattr(_se.response, "status_code", 0) == 401  # type: ignore[attr-defined]
+                        )
+                        if _is_401:
+                            with suppress(Exception):
+                                self._agent.update_agent_token(old_token)
+                            _detail = http_response_detail(_se.response) if hasattr(_se, "response") else str(_se)  # type: ignore[attr-defined]
+                            tray_dialogs.show_message(
+                                "Session refusee",
+                                f"Le portail a refuse la connexion (401) :\n{_detail}",
+                                kind="error",
+                            )
+                            return
+                        # Erreur non-auth : on garde la session mais on avertit.
+                        _sync_warning = str(_se)
 
                     cfg_file = _resolve_agent_config_path()
                     cfg_file.parent.mkdir(parents=True, exist_ok=True)
@@ -535,6 +564,11 @@ class RaguiaTray:
                     if cfg_file.is_file():
                         with open(cfg_file, encoding="utf-8") as f:
                             data = yaml.safe_load(f) or {}
+                    # Conserver une config complete meme si le fichier n'existe plus.
+                    data.setdefault("api_base", self._agent.cfg.api_base)
+                    data.setdefault("watch_parent", self._agent.cfg.watch_parent)
+                    data.setdefault("root_folder_name", self._agent.cfg.root_folder_name)
+                    data["client_slug"] = slug
                     data["agent_token"] = save_token(cfg_file, new_token)
                     with open(cfg_file, "w", encoding="utf-8") as f:
                         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
@@ -543,12 +577,21 @@ class RaguiaTray:
                     except Exception:
                         pass
 
-                    tray_dialogs.show_message(
-                        "Jeton mis a jour",
-                        "Le nouveau jeton est actif immediatement et enregistre.",
-                        kind="info",
-                    )
-                    self._on_agent_status(TrayStatus.IDLE, "Jeton mis a jour")
+                    if _sync_warning:
+                        tray_dialogs.show_message(
+                            "Connexion enregistree",
+                            "Session enregistree. La verification du portail a echoue "
+                            f"(reseau ?) mais la connexion sera reprise au prochain cycle.\n"
+                            f"Erreur: {_sync_warning[:120]}",
+                            kind="warning",
+                        )
+                    else:
+                        tray_dialogs.show_message(
+                            "Connexion reussie",
+                            "Session agent mise a jour et enregistree avec succes.",
+                            kind="info",
+                        )
+                    self._on_agent_status(TrayStatus.IDLE, "Session agent reconnectee")
                 finally:
                     self._end_busy()
 
@@ -883,6 +926,15 @@ class RaguiaTray:
                                 "Téléchargement terminé. L'agent va redémarrer.",
                                 kind="info",
                             )
+                            # Supprimer le lock PID maintenant, AVANT que le processus
+                            # courant se ferme, afin que la nouvelle instance lancee
+                            # par le script de remplacement ne la confonde pas avec
+                            # une instance encore active et ne quitte pas silencieusement.
+                            try:
+                                pid_file = APP_DATA_DIR / "agent.pid"
+                                pid_file.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                             quit_agent(icon, item)
                         else:
                             tray_dialogs.show_message(
@@ -981,7 +1033,7 @@ class RaguiaTray:
             pystray.MenuItem("Lancer un diagnostic (Doctor)…", run_doctor_ui),
             pystray.MenuItem("Verifier / installer mise a jour…", run_update_ui),
             pystray.MenuItem("Exporter un bundle support…", export_support),
-            pystray.MenuItem("Mettre a jour le jeton JWT…", update_jwt),
+            pystray.MenuItem("Se connecter / Reconnecter…", reconnect_portal),
             *(
                 [pystray.MenuItem("Maintenance (cache) — Basculer PROD/DEV", switch_environment)]
                 if admin_switch_cfg

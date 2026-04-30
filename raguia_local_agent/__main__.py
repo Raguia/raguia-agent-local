@@ -18,24 +18,75 @@ from raguia_local_agent.sync_agent import SyncAgent
 
 
 def _pid_is_running(pid: int) -> bool:
+    """Vérifie sans danger qu'un PID est actif.
+
+    Important sur Windows : ``os.kill(pid, 0)`` envoie en réalité un signal
+    (CTRL_C_EVENT/SIGTERM) — pas un test de présence — et peut donc tuer un
+    processus innocent dont le PID a été recyclé. On utilise ``OpenProcess``
+    via ctypes : c'est l'équivalent fiable de ``kill -0`` sur Windows.
+    """
     if pid <= 0:
         return False
+    if pid == os.getpid():
+        return True
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+            ]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.GetExitCodeProcess.argtypes = [
+                wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+            ]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return False
+            try:
+                code = wintypes.DWORD()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Le process existe mais appartient a un autre utilisateur.
         return True
-    except Exception:
+    except OSError:
         return False
     return True
 
 
 def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
-    """Empêche plusieurs instances locales simultanees.
+    """Empêche plusieurs instances locales simultanées.
 
-    Retourne (ok, lock_path). Si ok=False, une autre instance est deja active.
+    Stratégie :
+    1) Lit le fichier existant ; s'il référence un PID actif → refuse.
+    2) Sinon, supprime puis recrée le fichier en exclusif (``O_CREAT | O_EXCL``)
+       pour fermer la fenêtre de course quand deux processus démarrent
+       simultanément.
+    3) En cas d'échec, on retombe sur un write_text simple (compat).
+
+    Retourne ``(ok, lock_path)``. Si ``ok=False``, une autre instance est active.
     """
     APP_DATA_DIR.mkdir(mode=0o700, exist_ok=True)
     lock_path = APP_DATA_DIR / "agent.pid"
@@ -46,10 +97,44 @@ def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
             existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
         except Exception:
             existing_pid = 0
-        if existing_pid and _pid_is_running(existing_pid):
+        if existing_pid and existing_pid != current_pid and _pid_is_running(existing_pid):
+            return False, None
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(lock_path), flags, 0o600)
+    except FileExistsError:
+        try:
+            existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+        except Exception:
+            existing_pid = 0
+        if existing_pid and existing_pid != current_pid and _pid_is_running(existing_pid):
+            return False, None
+        try:
+            lock_path.write_text(str(current_pid), encoding="utf-8")
+            return True, lock_path
+        except OSError:
+            return False, None
+    except OSError:
+        try:
+            lock_path.write_text(str(current_pid), encoding="utf-8")
+            return True, lock_path
+        except OSError:
             return False, None
 
-    lock_path.write_text(str(current_pid), encoding="utf-8")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(current_pid))
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False, None
     return True, lock_path
 
 
@@ -80,11 +165,10 @@ def test_connection(cfg: AgentConfig) -> bool:
     except httpx.HTTPStatusError as e:
         detail = http_response_detail(e.response)
         if e.response.status_code == 401:
-            print("  ERREUR 401 — jeton agent refuse par le portail :")
+            print("  ERREUR 401 — connexion refusee par le portail :")
             print(f"     {detail or e}")
             print(
-                "  En local : emettre le jeton via le backend sur lequel pointe api_base "
-                "(ex. http://127.0.0.1:8000), pas un JWT copié depuis la production."
+                "  Utilisez « Se connecter / Reconnecter » dans le menu de l'icone."
             )
         else:
             print(f"  ERREUR HTTP {e.response.status_code} : {detail or e}")
@@ -92,6 +176,20 @@ def test_connection(cfg: AgentConfig) -> bool:
     except Exception as e:
         print(f"  ERREUR {e}")
         return False
+
+
+def _show_fatal_error_dialog(title: str, body: str) -> None:
+    """Affiche un dialogue d'erreur visible même en mode binaire windowed.
+
+    En binaire Windows ``--noconsole``, ``print()`` n'a pas de destination :
+    l'utilisateur double-clique sur l'exe et rien ne se passe. On utilise
+    PowerShell/osascript/zenity pour garantir un retour visuel.
+    """
+    try:
+        from raguia_local_agent import tray_dialogs
+        tray_dialogs.show_message(title, body, kind="error")
+    except Exception:
+        pass
 
 
 def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
@@ -105,19 +203,22 @@ def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
                 print("Configuration annulee. Arret.")
                 sys.exit(0)
         except Exception as e:
-            print(f"Wizard indisponible : {e}")
-            if getattr(sys, "frozen", False):
-                print("Creez ~/.raguia/config.yaml manuellement.")
-            else:
-                print(
-                    "Creez ~/.raguia/config.yaml manuellement, "
-                    "ou relancez depuis le clone Git apres 'pip install -e \".[tray]\"'."
-                )
+            msg = (
+                f"L'assistant de configuration n'a pas pu démarrer : {e}\n\n"
+                "Créez ~/.raguia/config.yaml manuellement"
+            )
+            if not getattr(sys, "frozen", False):
+                msg += " ou relancez depuis le clone Git après 'pip install -e \".[tray]\"'"
+            msg += "."
+            print(msg)
+            _show_fatal_error_dialog("Raguia — Assistant indisponible", msg)
             sys.exit(1)
     try:
         return load_config(cfg_path)
     except ValueError as e:
-        print(f"Configuration invalide: {e}")
+        msg = f"Configuration invalide : {e}"
+        print(msg)
+        _show_fatal_error_dialog("Raguia — Configuration invalide", msg)
         sys.exit(1)
 
 
@@ -131,7 +232,7 @@ def main() -> None:
                         help="Demarre sans icone systray (mode serveur)")
     args = parser.parse_args()
 
-    cfg_path = Path(args.config) if args.config else None
+    cfg_path = Path(args.config).expanduser() if args.config else None
     cfg = _run_wizard_if_needed(cfg_path)
     setup_logging(
         cfg.app_data_dir,
@@ -157,7 +258,7 @@ def main() -> None:
     logging.info("Fichier config : %s | api_base : %s", _cfg_p, cfg.api_base)
     if os.environ.get("RAGUIA_AGENT_TOKEN"):
         logging.info(
-            "Jeton API : variable RAGUIA_AGENT_TOKEN (le YAML agent_token est ignore)."
+            "Session chargee depuis RAGUIA_AGENT_TOKEN (variable d'environnement)."
         )
 
     try:
@@ -167,14 +268,40 @@ def main() -> None:
                 sys.exit(1)
             sys.exit(0 if test_connection(cfg) else 1)
 
-        if not cfg.agent_token:
+        if not cfg.agent_token and not args.test:
+            # Le trousseau OS peut etre temporairement indisponible immediatement
+            # apres un redemarrage (Windows Credential Locker, GNOME Keyring,
+            # etc.). On retente plusieurs fois avec un court delai avant de
+            # passer en mode degrade.
+            from raguia_local_agent.secret_store import KEYRING_SENTINEL, load_token
+            try:
+                import yaml as _yaml
+                _raw = _yaml.safe_load(cfg.cfg_path.read_text(encoding="utf-8")) if (cfg.cfg_path and cfg.cfg_path.is_file()) else {}
+                _stored = str((_raw or {}).get("agent_token") or "").strip()
+                if _stored == KEYRING_SENTINEL:
+                    for _attempt in range(4):
+                        time.sleep(1.5)
+                        _tok = load_token(cfg.cfg_path, KEYRING_SENTINEL)
+                        if _tok:
+                            cfg.agent_token = _tok
+                            logging.info("Token keyring recupere apres %d tentative(s).", _attempt + 1)
+                            break
+            except Exception as _e:
+                logging.warning("Retry keyring echoue: %s", _e)
+
+        if not cfg.agent_token and args.no_tray:
             logging.error(
-                "Jeton agent manquant. Lancez 'raguia-local-agent' sans argument "
-                "pour ouvrir l'assistant, ou definissez RAGUIA_AGENT_TOKEN."
+                "Session agent non disponible. Reconnectez l'agent ou lancez sans --no-tray."
             )
             sys.exit(1)
 
         agent = SyncAgent(cfg)
+
+        # Si le token est absent (trousseau inaccessible meme apres retry), on demarre
+        # quand meme le tray en mode degrade : l'icone rouge s'affiche et le dialogue
+        # de reconnexion est ouvert automatiquement pour que l'utilisateur puisse
+        # fournir ses identifiants sans avoir a relancer l'application manuellement.
+        _needs_reconnect = not cfg.agent_token
 
         try:
             # --- Mode sans tray (serveur / terminal) ---
@@ -192,6 +319,22 @@ def main() -> None:
             try:
                 from raguia_local_agent.tray import RaguiaTray
                 tray = RaguiaTray(agent, on_quit=agent.stop)
+                if _needs_reconnect:
+                    # Planifie l'ouverture automatique du dialogue de reconnexion
+                    # une fois que le tray est initialise (apres un court delai).
+                    def _auto_reconnect() -> None:
+                        time.sleep(1.5)
+                        try:
+                            from raguia_local_agent import tray_dialogs
+                            tray_dialogs.show_message(
+                                "Reconnexion requise",
+                                "La session d'authentification n'a pas pu etre chargee.\n"
+                                "Utilisez « Se connecter / Reconnecter… » dans le menu de l'icone.",
+                                kind="warning",
+                            )
+                        except Exception:
+                            pass
+                    threading.Thread(target=_auto_reconnect, daemon=True).start()
                 tray.run()          # bloque dans le thread principal (requis sur macOS)
             except ImportError:
                 logging.info("pystray/Pillow non disponible — mode sans tray. Ctrl+C pour arreter.")

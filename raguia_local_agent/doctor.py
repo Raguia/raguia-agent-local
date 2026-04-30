@@ -43,7 +43,7 @@ def _format_portal_check_error(exc: Exception) -> str:
             pass
 
         by_code = {
-            401: "jeton invalide / expire / generation obsolete (regenerez depuis le portail)",
+            401: "connexion refusee (401) : reconnectez-vous via le menu tray",
             403: "agent local desactive pour ce client ou droits refuses",
             404: "route ou client introuvable — verifiez api_base (racine backend, pas une page /portal)",
         }
@@ -138,7 +138,7 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
     if raw_token == KEYRING_SENTINEL:
         lines.append(_ok("Token stocke dans le trousseau OS"))
     elif keyring_available:
-        lines.append(_warn("Token encore en YAML", "Lancez une mise a jour du jeton pour migrer"))
+        lines.append(_warn("Session en mode compatible", "Reconnectez-vous via le menu tray pour securiser la session"))
     else:
         lines.append(_warn("Trousseau OS indisponible", "Mode compatibilite actif"))
 

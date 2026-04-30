@@ -69,7 +69,7 @@ class AgentConfig:
     cfg_path: Path | None = None
 
     def save_token(self, token: str) -> None:
-        """Enregistre le nouveau token dans le fichier YAML et en mémoire."""
+        """Enregistre la nouvelle session dans le fichier de config et en memoire."""
         self.agent_token = token
         if not self.cfg_path or not self.cfg_path.is_file():
             return
@@ -78,7 +78,7 @@ class AgentConfig:
                 data = yaml.safe_load(f) or {}
             data["agent_token"] = save_token(self.cfg_path, token)
             with open(self.cfg_path, "w", encoding="utf-8") as f:
-                yaml.dump(data, f, default_flow_style=False)
+                yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Impossible de sauvegarder le nouveau token dans %s : %s", self.cfg_path, e)
@@ -126,7 +126,7 @@ def load_config(path: Path | None = None) -> AgentConfig:
     if path is None:
         env_path = os.environ.get("RAGUIA_AGENT_CONFIG")
         if env_path:
-            path = Path(env_path)
+            path = Path(env_path).expanduser()
         elif (APP_DATA_DIR / "config.yaml").is_file():
             path = APP_DATA_DIR / "config.yaml"
         elif Path("raguia_agent.yaml").is_file():
@@ -158,8 +158,8 @@ def load_config(path: Path | None = None) -> AgentConfig:
     if os.environ.get("RAGUIA_AGENT_TOKEN"):
         cfg.agent_token = os.environ["RAGUIA_AGENT_TOKEN"].strip()
         log.info(
-            "Jeton agent charge depuis la variable RAGUIA_AGENT_TOKEN "
-            "(prioritaire — le champ agent_token du fichier YAML est ignore)."
+            "Session agent chargee depuis la variable RAGUIA_AGENT_TOKEN "
+            "(prioritaire sur la configuration fichier)."
         )
     if os.environ.get("RAGUIA_WATCH_PARENT"):
         cfg.watch_parent = os.environ["RAGUIA_WATCH_PARENT"]
@@ -182,7 +182,18 @@ def load_config(path: Path | None = None) -> AgentConfig:
 def _validate_resolved_agent_token(
     cfg: AgentConfig, raw_data: dict[str, Any] | None
 ) -> None:
-    """Refuse un demarrage incoherent : YAML reference le trousseau mais lecture vide."""
+    """Diagnostique un trousseau temporairement indisponible (ne bloque PAS le démarrage).
+
+    Auparavant cette fonction levait une ``ValueError`` quand le YAML référence
+    le trousseau (``__RAGUIA_KEYRING__``) mais que la lecture est vide.
+    Problème sur Windows : juste après un redémarrage, le service Credential
+    Locker n'est pas encore prêt, le retry programmé dans ``__main__.py``
+    n'était jamais atteint car ``load_config()`` plantait avant.
+
+    Comportement actuel : on log seulement. L'agent démarre en mode dégradé,
+    affiche l'icône rouge et propose la reconnexion. Le token sera relu
+    automatiquement lors du retry keyring (voir ``__main__.py``).
+    """
     if os.environ.get("RAGUIA_AGENT_TOKEN"):
         return
     if not raw_data:
@@ -192,17 +203,15 @@ def _validate_resolved_agent_token(
         return
     if (cfg.agent_token or "").strip():
         return
-    raise ValueError(
-        "Le fichier de configuration reference le trousseau (__RAGUIA_KEYRING__) mais "
-        "aucun jeton n'a pu etre lu (vide). Souvent : tropseau temporairement indisponible, "
-        "ou chemin de config different d'une session a l'autre. "
-        "Relancez, ou definissez RAGUIA_AGENT_TOKEN, ou mettez le jeton en clair dans YAML "
-        "(secure_token_storage: false) puis remettez le trousseau via le menu de l'icone."
+    log.warning(
+        "Trousseau OS temporairement indisponible (session vide). "
+        "L'agent va demarrer en mode degrade et retentera la lecture du trousseau ; "
+        "a defaut, reconnectez-vous via l'icone."
     )
 
 
 def _migrate_plaintext_token_to_keyring(path: Path | None, raw_data: dict[str, Any] | None) -> None:
-    """Migration transparente: token YAML en clair -> keyring + sentinel.
+    """Migration transparente : session stockee en clair -> trousseau OS + sentinel.
 
     Si keyring n'est pas disponible, la fonction ne fait rien.
     """
@@ -221,7 +230,7 @@ def _migrate_plaintext_token_to_keyring(path: Path | None, raw_data: dict[str, A
         updated = dict(raw_data)
         updated["agent_token"] = stored_value
         with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(updated, f, default_flow_style=False)
+            yaml.safe_dump(updated, f, default_flow_style=False, allow_unicode=True)
         try:
             os.chmod(path, 0o600)
         except Exception:
@@ -250,8 +259,8 @@ def _enforce_secure_token_storage(
             stored = ""
     if stored and stored != KEYRING_SENTINEL:
         raise ValueError(
-            "Configuration refusee: token en clair detecte alors que secure_token_storage=true. "
-            "Mettez a jour le jeton pour le migrer vers le trousseau OS."
+            "Configuration refusee : session en clair detectee avec secure_token_storage=true. "
+            "Reconnectez-vous via le wizard ou le menu tray pour migrer vers le trousseau OS."
         )
 
 

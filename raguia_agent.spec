@@ -80,6 +80,8 @@ a = Analysis(
         "tkinter.filedialog",
         "tkinter.messagebox",
         "tkinter.simpledialog",
+        # SSL / certifi — bundle CA pour HTTPS (important en mode one-file Windows)
+        "certifi",
         # divers
         "yaml",
         "_yaml",
@@ -87,7 +89,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["rth_certifi.py"],
     excludes=["pytest", "_pytest", "tests", "test", "unittest"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
