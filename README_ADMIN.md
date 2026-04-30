@@ -22,7 +22,7 @@ Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.git
 ### 2.1 Prérequis
 
 - Connexion internet (HTTPS vers le portail Raguia).
-- Identifiants portail client (slug + mot de passe) pour la connexion initiale de l'agent.
+- Un Jeton JWT agent généré depuis le portail (section **Paramètres → Agent de synchronisation**).
 - Aucun autre prérequis logiciel.
 
 ### 2.2 Procédure (Windows)
@@ -32,7 +32,7 @@ Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.git
 3. **Si SmartScreen s'affiche** ("Windows a protégé votre ordinateur") :
    - Cliquer **Informations supplémentaires** → **Exécuter quand même**.
    - Ce message est normal pour un exécutable sans signature Authenticode grand public. Il disparaîtra si vous investissez dans un certificat de signature de code (~100 €/an).
-4. L'assistant de configuration s'ouvre. Saisir l'URL du portail, le slug client, le mot de passe portail, puis choisir le dossier parent.
+4. L'assistant de configuration s'ouvre. Saisir l'URL du portail, coller le Jeton, choisir le dossier parent.
 5. Cliquer **Tester** → **Enregistrer & Démarrer**.
 
 L'agent s'inscrit automatiquement dans `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pour démarrer à chaque connexion de l'utilisateur (sans droits administrateur). Un ancien mode compatibilité via raccourci `Startup` peut aussi exister sur certains postes.
@@ -48,7 +48,7 @@ L'agent s'inscrit automatiquement dans `HKCU\Software\Microsoft\Windows\CurrentV
      xattr -d com.apple.quarantine /Applications/raguia-agent.app
      ```
    Après ce retrait du flag de quarantaine, l'app s'ouvre normalement par double-clic.
-4. L'assistant s'ouvre. Saisir l'URL du portail, le slug client, le mot de passe portail, puis choisir le dossier parent.
+4. L'assistant s'ouvre. Saisir l'URL du portail, coller le Jeton, choisir le dossier parent.
 5. **Enregistrer & Démarrer**.
 
 L'agent crée automatiquement un LaunchAgent dans `~/Library/LaunchAgents/com.raguia.local.agent.plist` pour démarrer au login de l'utilisateur.
@@ -76,7 +76,6 @@ La configuration est stockée dans `~/.raguia/config.yaml` (créé par le wizard
 
 ```yaml
 api_base: "https://raguia.monentreprise.com"
-client_slug: "entreprise-demo"
 agent_token: "eyJhbGci..."          # ou sentinel keyring si secure_token_storage: true
 watch_parent: "/Users/prenom/Documents"
 root_folder_name: "RAGUIA"
@@ -139,11 +138,11 @@ Sans secret CI, le fallback reste `.raguia-admin.json` (compatibilité locale).
   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
   ```
 
-### Erreur 401 / Session agent expirée
+### Erreur 401 / Jeton expiré
 
-Menu tray → **Se connecter / Reconnecter…** puis saisir `slug + mot de passe portail`.
+Menu tray → **Mettre à jour le jeton JWT** → coller le nouveau jeton depuis le portail.
 
-L'agent tente un refresh silencieux avant expiration. Si ce refresh échoue, une reconnexion est demandée.
+Ou éditer directement `~/.raguia/config.yaml` et remplacer `agent_token`.
 
 ### Désactiver le démarrage automatique sans désinstaller
 

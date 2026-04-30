@@ -18,7 +18,6 @@ import hashlib
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -27,13 +26,11 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .api_client import ssl_verify, trust_env
-
 log = logging.getLogger(__name__)
 
 # Délai (secondes) accordé au processus courant pour se terminer avant que
 # le shell de remplacement ne tente le move/rename.
-_REPLACE_DELAY_S = 8
+_REPLACE_DELAY_S = 4
 _TRUSTED_DOWNLOAD_HOSTS = {
     # Workflow release GitHub courant
     "github.com",
@@ -156,8 +153,7 @@ class AgentUpdater:
         r = httpx.get(
             url,
             timeout=20.0,
-            verify=ssl_verify(),
-            trust_env=trust_env(),
+            trust_env=False,
             headers={"Accept": "application/vnd.github+json"},
             follow_redirects=True,
         )
@@ -252,13 +248,7 @@ class AgentUpdater:
         if not sha_url:
             raise ValueError("URL du fichier SHA256 manquante.")
 
-        r = httpx.get(
-            sha_url,
-            timeout=20.0,
-            verify=ssl_verify(),
-            trust_env=trust_env(),
-            follow_redirects=True,
-        )
+        r = httpx.get(sha_url, timeout=20.0, trust_env=False, follow_redirects=True)
         r.raise_for_status()
         sha256 = _parse_sha256_text(r.text or "")
         if not sha256:
@@ -372,8 +362,7 @@ class AgentUpdater:
                 download_url,
                 timeout=300.0,
                 follow_redirects=True,
-                verify=ssl_verify(),
-                trust_env=trust_env(),
+                trust_env=False,
             )
             r.raise_for_status()
         except Exception:
@@ -461,36 +450,19 @@ class AgentUpdater:
 # ------------------------------------------------------------------
 
 def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
-    """Spawne cmd.exe détaché : attend la sortie de l'agent, déplace, relance.
-
-    Retry jusqu'à ~30 s : sur Windows, le ``move`` échoue tant que le binaire
-    courant est encore mappé en mémoire. L'agent peut mettre quelques secondes
-    à libérer ses ressources (queue SQLite, sockets, etc.).
-    """
+    """Spawne cmd.exe détaché : attend la sortie de l'agent, déplace, relance."""
     cur = str(current_exe)
     new = str(pending_exe)
-    # Boucle PowerShell : attente initiale puis retry du Move-Item pendant 30 s.
-    # On préfère PowerShell à cmd pour la gestion d'erreur fiable et l'attente
-    # active tant que le fichier source est verrouillé.
-    ps_cmd = (
-        f"Start-Sleep -Seconds {_REPLACE_DELAY_S};"
-        f"$src = '{new}'.Replace(\"'\",\"''\");"
-        f"$dst = '{cur}'.Replace(\"'\",\"''\");"
-        "$ok = $false;"
-        "for ($i = 0; $i -lt 30; $i++) {"
-        "  try { Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop;"
-        "        $ok = $true; break }"
-        "  catch { Start-Sleep -Seconds 1 }"
-        "};"
-        # Lance le binaire (nouveau ou ancien si le swap a échoué) sans console.
-        "if ($ok) { Start-Process -FilePath $dst -WindowStyle Hidden }"
-        "else { if (Test-Path -LiteralPath $dst) { Start-Process -FilePath $dst -WindowStyle Hidden } }"
+    # Guillemets doublés dans la commande cmd pour gérer les espaces dans les chemins
+    cmd_str = (
+        f'timeout /t {_REPLACE_DELAY_S} /nobreak >nul'
+        f' & move /y "{new}" "{cur}"'
+        f' & start "" "{cur}"'
     )
     try:
-        pwsh = shutil.which("powershell") or "powershell.exe"
         subprocess.Popen(
-            [pwsh, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_cmd],
-            creationflags=0x08000000 | 0x00000008,
+            ["cmd", "/c", cmd_str],
+            creationflags=0x08000000 | 0x00000008,  # CREATE_NO_WINDOW | DETACHED_PROCESS
             close_fds=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -503,32 +475,14 @@ def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
 
 
 def _spawn_replace_macos(current_app: Path, pending_app: Path) -> bool:
-    """Spawne bash détaché : swap sûr de .app + relance.
-
-    Stratégie défensive:
-    - ne supprime jamais l'app courante avant d'avoir un backup,
-    - restaure le backup si le move du nouveau bundle échoue,
-    - retire le flag de quarantaine sur le bundle final.
-    """
+    """Spawne bash détaché : attend, supprime l'ancien .app, déplace, ouvre."""
     cur = shlex.quote(str(current_app))
     new = shlex.quote(str(pending_app))
-    bak = shlex.quote(str(current_app.with_suffix(".old.app")))
     bash_cmd = (
-        "set -euo pipefail; "
-        f"sleep {_REPLACE_DELAY_S}; "
-        f"rm -rf {bak}; "
-        f'if [ -d {cur} ]; then mv {cur} {bak}; fi; '
-        f'if ! mv {new} {cur}; then '
-        f'  if [ -d {bak} ]; then mv {bak} {cur}; fi; '
-        f"  exit 1; "
-        f"fi; "
-        f"xattr -dr com.apple.quarantine {cur} || true; "
-        f"chmod +x {cur}/Contents/MacOS/raguia-agent || true; "
-        # -n force macOS a ouvrir une nouvelle instance meme si l'ancienne
-        # est encore en cours de fermeture (sinon open redirige vers l'existante
-        # qui est en train de mourir, et rien ne demarre).
-        f"open -n {cur} || open {cur}; "
-        f"rm -rf {bak} || true"
+        f"sleep {_REPLACE_DELAY_S} "
+        f"&& rm -rf {cur} "
+        f"&& mv {new} {cur} "
+        f"&& open {cur}"
     )
     try:
         subprocess.Popen(

@@ -23,25 +23,24 @@ def _credential_id(config_path: Path | None) -> str:
 def _credential_id_candidates(config_path: Path | None) -> list[str]:
     """IDs possibles (compat anciennes versions / chemins variants)."""
     ids: list[str] = []
+    default_config = Path.home() / ".raguia" / "config.yaml"
+    is_default_config = config_path is None
     if config_path is not None:
         raw = str(config_path)
         expanded = str(config_path.expanduser())
         try:
-            resolved = str(config_path.expanduser().resolve())
+            resolved_path = config_path.expanduser().resolve()
+            resolved = str(resolved_path)
+            is_default_config = resolved_path == default_config.resolve()
         except Exception:
             resolved = expanded
+            is_default_config = Path(expanded) == default_config.expanduser()
         ids.extend([resolved, expanded, raw])
-
-    # Compat historique:
-    # - d'anciennes versions pouvaient stocker sous ~/.raguia/config.yaml
-    # - certaines integrations utilisaient "default" (config_path None)
-    # On conserve ces alias meme quand config_path est connu pour eviter
-    # de perdre l'acces au token apres update/migration.
-    try:
-        ids.append(str((Path.home() / ".raguia" / "config.yaml").resolve()))
-    except Exception:
-        ids.append(str(Path.home() / ".raguia" / "config.yaml"))
-    ids.append("default")
+    # Compat historique uniquement pour la config par defaut. Ne pas exposer
+    # un token d'une config custom a une autre config avec le sentinel keyring.
+    if is_default_config:
+        ids.append(str(default_config.resolve()))
+        ids.append("default")
 
     dedup: list[str] = []
     seen = set()
@@ -103,18 +102,10 @@ def load_token(config_path: Path | None, stored_value: str) -> str:
         log.warning("Token configure en keyring mais module indisponible.")
         return ""
     try:
-        tested: list[str] = []
         for ident in _credential_id_candidates(config_path):
-            tested.append(ident)
             value = keyring.get_password(KEYRING_SERVICE, ident) or ""
             if value.strip():
-                log.debug("Jeton keyring charge via identifiant '%s'.", ident)
                 return value
-        if tested:
-            log.warning(
-                "Token keyring introuvable pour les identifiants testes (%d).",
-                len(tested),
-            )
         return ""
     except Exception as e:
         log.warning("Impossible de lire le token depuis keyring: %s", e)

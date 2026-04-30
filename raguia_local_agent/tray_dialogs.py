@@ -16,26 +16,17 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _resolved_runner_python() -> str | None:
-    """Python pour sous-processus Tk.
-
-    Retourne le chemin vers un interpréteur Python capable d'exécuter ``-c <code>``,
-    ou ``None`` si aucun n'est trouvé (les appelants tombent alors sur leur fallback
-    natif : PowerShell/osascript/zenity).
-
-    En mode binaire PyInstaller, ``sys.executable`` pointe vers le bootloader de
-    l'application (pas un interpréteur Python). Le passer comme interpréteur
-    démarrerait une seconde instance de l'agent au lieu d'exécuter le script Tk.
+def _resolved_runner_python() -> str:
+    """Python pour sous-processus Tk : ``sys.executable`` peut pointer vers un binaire absent
+    (venv recréé avec seulement ``python``, ancien ``python3`` supprimé, lien cassé).
     """
     if getattr(sys, "frozen", False):
-        # Binaire PyInstaller : chercher un Python système dans le PATH uniquement.
+        # En binaire PyInstaller, sys.executable pointe vers l'app/bootloader
+        # (pas toujours capable d'executer "python -c ...").
         for name in ("python3", "python"):
             p = shutil.which(name)
             if p:
                 return p
-        # Aucun Python système trouvé → les appelants doivent utiliser leur fallback natif.
-        return None
-
     exe = Path(sys.executable)
     if exe.is_file():
         return str(exe.resolve())
@@ -50,7 +41,7 @@ def _resolved_runner_python() -> str | None:
             p = parent / name
             if p.is_file():
                 return str(p.resolve())
-    return None
+    return sys.executable
 
 
 def _run_osascript(script: str) -> subprocess.CompletedProcess | None:
@@ -158,17 +149,9 @@ def _windows_prompt_text(title: str, prompt: str, masked: bool = False) -> str |
     return raw if raw else None
 
 
-def _run_tk_subprocess(code: str) -> subprocess.CompletedProcess | None:
-    """Lance un sous-processus Python pour afficher une fenêtre Tk.
-
-    Retourne ``None`` si aucun interpréteur Python n'est disponible (binaire gelé
-    sans Python système) afin que les appelants activent leur fallback natif.
-    """
-    python = _resolved_runner_python()
-    if python is None:
-        return None
+def _run_tk_subprocess(code: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [python, "-c", code],
+        [_resolved_runner_python(), "-c", code],
         env={**os.environ, "TK_SILENCE_DEPRECATION": "1", "PYTHONUTF8": "1"},
         timeout=600,
         capture_output=True,
@@ -207,11 +190,11 @@ def prompt_agent_token() -> str | None:
             "    f.write((t or '').strip())\n"
         )
         r = _run_tk_subprocess(script)
-        if not r or r.returncode != 0:
+        if r.returncode != 0:
             log.warning(
                 "prompt_agent_token: code=%s stderr=%s",
-                r.returncode if r else "no-python",
-                (r.stderr or "")[:500] if r else "",
+                r.returncode,
+                (r.stderr or "")[:500],
             )
             if sys.platform == "darwin":
                 prompt = _as_quote("Collez le nouveau jeton JWT agent :")
@@ -260,102 +243,6 @@ def prompt_agent_token() -> str | None:
             pass
 
 
-def prompt_portal_login() -> tuple[str, str] | None:
-    """Demande slug + mot de passe portail. Retourne ``None`` si annulation."""
-    out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-    out_path.close()
-    path = out_path.name
-    try:
-        # Formulaire explicite (2 champs) pour éviter les dialogues ambigus
-        # selon les backends UI (notamment macOS/AppKit + pystray).
-        script = (
-            "import tkinter as tk\n"
-            "root = tk.Tk()\n"
-            "root.title('Raguia — Connexion portail')\n"
-            "root.resizable(False, False)\n"
-            "root.geometry('520x230')\n"
-            "try:\n"
-            "    root.lift()\n"
-            "    root.attributes('-topmost', True)\n"
-            "    root.update_idletasks()\n"
-            "except Exception:\n"
-            "    pass\n"
-            "root.configure(bg='#eef2f7')\n"
-            "card = tk.Frame(root, bg='white', bd=1, relief='solid')\n"
-            "card.pack(fill='both', expand=True, padx=14, pady=12)\n"
-            "form = tk.Frame(card, bg='white')\n"
-            "form.pack(fill='both', expand=True, padx=14, pady=12)\n"
-            "tk.Label(form, text='Slug client (ex: entreprise-demo) :', bg='white', fg='#111827').pack(anchor='w')\n"
-            "slug_entry = tk.Entry(form, width=50, bg='white', fg='#111827', insertbackground='#111827', relief='solid', bd=1)\n"
-            "slug_entry.pack(fill='x', pady=(4, 10))\n"
-            "tk.Label(form, text='Mot de passe portail :', bg='white', fg='#111827').pack(anchor='w')\n"
-            "pwd_entry = tk.Entry(form, width=50, show='*', bg='white', fg='#111827', insertbackground='#111827', relief='solid', bd=1)\n"
-            "pwd_entry.pack(fill='x', pady=(4, 10))\n"
-            "result = {'ok': False, 'slug': '', 'pwd': ''}\n"
-            "def submit():\n"
-            "    result['slug'] = slug_entry.get().strip().lower()\n"
-            "    result['pwd'] = pwd_entry.get().strip()\n"
-            "    if not result['slug'] or not result['pwd']:\n"
-            "        return\n"
-            "    result['ok'] = True\n"
-            "    root.destroy()\n"
-            "def cancel():\n"
-            "    root.destroy()\n"
-            "btns = tk.Frame(form, bg='white')\n"
-            "btns.pack(fill='x', side='bottom', pady=(8, 0))\n"
-            "tk.Button(btns, text='Annuler', command=cancel).pack(side='right')\n"
-            "tk.Button(btns, text='Valider', command=submit).pack(side='right', padx=(0, 8))\n"
-            "root.bind('<Return>', lambda e: submit())\n"
-            "root.bind('<Escape>', lambda e: cancel())\n"
-            "slug_entry.focus_set()\n"
-            "root.mainloop()\n"
-            f"with open({path!r}, 'w', encoding='utf-8') as f:\n"
-            "    if result['ok']:\n"
-            "        f.write('__OK__\\n' + result['slug'] + '\\n' + result['pwd'])\n"
-            "    else:\n"
-            "        f.write('__CANCEL__\\n')\n"
-        )
-        r = _run_tk_subprocess(script)
-        if r and r.returncode == 0:
-            raw = Path(path).read_text(encoding='utf-8').splitlines()
-            if raw and raw[0].strip() == "__CANCEL__":
-                return None
-            if len(raw) >= 3 and raw[0].strip() == "__OK__":
-                slug = raw[1].strip().lower()
-                password = raw[2].strip()
-                if slug and password:
-                    return slug, password
-
-        # Fallback cross-platform (ancien comportement en 2 prompts)
-        slug = prompt_text(
-            "Raguia — Connexion portail",
-            "Slug client (ex: entreprise-demo) :",
-            masked=False,
-        )
-        if slug is None:
-            return None
-        password = prompt_text(
-            "Raguia — Connexion portail",
-            "Mot de passe portail :",
-            masked=True,
-        )
-        if password is None:
-            return None
-        slug = slug.strip().lower()
-        password = password.strip()
-        if not slug or not password:
-            return None
-        return slug, password
-    except Exception as e:
-        log.exception("prompt_portal_login: %s", e)
-        return None
-    finally:
-        try:
-            Path(path).unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
 def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:
     """Affiche un input texte simple. Retourne None si annule/vide."""
     out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
@@ -382,12 +269,8 @@ def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:
             "    f.write((t or '').strip())\n"
         )
         r = _run_tk_subprocess(script)
-        if not r or r.returncode != 0:
-            log.warning(
-                "prompt_text: code=%s stderr=%s",
-                r.returncode if r else "no-python",
-                (r.stderr or "")[:500] if r else "",
-            )
+        if r.returncode != 0:
+            log.warning("prompt_text: code=%s stderr=%s", r.returncode, (r.stderr or "")[:500])
             if sys.platform == "darwin":
                 hidden = " with hidden answer" if masked else ""
                 prompt_as = _as_quote(prompt)
@@ -452,8 +335,8 @@ def show_message(title: str, message: str, *, kind: str = "info") -> None:
     )
     try:
         r = _run_tk_subprocess(script)
-        if not r or r.returncode != 0:
-            log.warning("show_message: %s", (r.stderr or "")[:300] if r else "no-python")
+        if r.returncode != 0:
+            log.warning("show_message: %s", (r.stderr or "")[:300])
             if sys.platform == "darwin":
                 icon = "stop" if kind == "error" else ("caution" if kind == "warning" else "note")
                 message_as = _as_quote(message)
@@ -509,13 +392,9 @@ def confirm_git_pull_update(
     )
     try:
         r = _run_tk_subprocess(script)
-        if r and r.returncode == 0:
+        if r.returncode == 0:
             return (r.stdout or "").strip() == "1"
-        log.warning(
-            "confirm_git_pull_update: code=%s stderr=%s",
-            r.returncode if r else "no-python",
-            (r.stderr or "")[:300] if r else "",
-        )
+        log.warning("confirm_git_pull_update: code=%s stderr=%s", r.returncode, (r.stderr or "")[:300])
         if sys.platform == "darwin":
             body_as = _as_quote(body)
             title_as = _as_quote("Raguia — Mise a jour depuis Git")
@@ -575,13 +454,9 @@ def confirm_agent_update(current_version: str, new_version: str) -> bool:
     )
     try:
         r = _run_tk_subprocess(script)
-        if r and r.returncode == 0:
+        if r.returncode == 0:
             return (r.stdout or "").strip() == "1"
-        log.warning(
-            "confirm_agent_update: code=%s stderr=%s",
-            r.returncode if r else "no-python",
-            (r.stderr or "")[:300] if r else "",
-        )
+        log.warning("confirm_agent_update: code=%s stderr=%s", r.returncode, (r.stderr or "")[:300])
         if sys.platform == "darwin":
             body_as = _as_quote(body)
             title_as = _as_quote("Raguia — Mise a jour")
@@ -639,13 +514,9 @@ def confirm_uninstall() -> bool:
     )
     try:
         r = _run_tk_subprocess(script)
-        if r and r.returncode == 0:
+        if r.returncode == 0:
             return (r.stdout or "").strip() == "1"
-        log.warning(
-            "confirm_uninstall: code=%s stderr=%s",
-            r.returncode if r else "no-python",
-            (r.stderr or "")[:300] if r else "",
-        )
+        log.warning("confirm_uninstall: code=%s stderr=%s", r.returncode, (r.stderr or "")[:300])
         if sys.platform == "darwin":
             body_as = _as_quote(body)
             title_as = _as_quote("Raguia — Desinstallation")

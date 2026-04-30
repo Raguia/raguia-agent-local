@@ -78,7 +78,7 @@ class AgentConfig:
                 data = yaml.safe_load(f) or {}
             data["agent_token"] = save_token(self.cfg_path, token)
             with open(self.cfg_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
+                yaml.dump(data, f, default_flow_style=False)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Impossible de sauvegarder le nouveau token dans %s : %s", self.cfg_path, e)
@@ -126,7 +126,7 @@ def load_config(path: Path | None = None) -> AgentConfig:
     if path is None:
         env_path = os.environ.get("RAGUIA_AGENT_CONFIG")
         if env_path:
-            path = Path(env_path).expanduser()
+            path = Path(env_path)
         elif (APP_DATA_DIR / "config.yaml").is_file():
             path = APP_DATA_DIR / "config.yaml"
         elif Path("raguia_agent.yaml").is_file():
@@ -182,18 +182,7 @@ def load_config(path: Path | None = None) -> AgentConfig:
 def _validate_resolved_agent_token(
     cfg: AgentConfig, raw_data: dict[str, Any] | None
 ) -> None:
-    """Diagnostique un trousseau temporairement indisponible (ne bloque PAS le démarrage).
-
-    Auparavant cette fonction levait une ``ValueError`` quand le YAML référence
-    le trousseau (``__RAGUIA_KEYRING__``) mais que la lecture est vide.
-    Problème sur Windows : juste après un redémarrage, le service Credential
-    Locker n'est pas encore prêt, le retry programmé dans ``__main__.py``
-    n'était jamais atteint car ``load_config()`` plantait avant.
-
-    Comportement actuel : on log seulement. L'agent démarre en mode dégradé,
-    affiche l'icône rouge et propose la reconnexion. Le token sera relu
-    automatiquement lors du retry keyring (voir ``__main__.py``).
-    """
+    """Refuse un demarrage incoherent : YAML reference le trousseau mais lecture vide."""
     if os.environ.get("RAGUIA_AGENT_TOKEN"):
         return
     if not raw_data:
@@ -203,10 +192,12 @@ def _validate_resolved_agent_token(
         return
     if (cfg.agent_token or "").strip():
         return
-    log.warning(
-        "Trousseau OS temporairement indisponible (jeton vide). "
-        "L'agent va démarrer en mode dégradé et retentera la lecture du trousseau ; "
-        "à défaut, reconnectez-vous via l'icône."
+    raise ValueError(
+        "Le fichier de configuration reference le trousseau (__RAGUIA_KEYRING__) mais "
+        "aucun jeton n'a pu etre lu (vide). Souvent : tropseau temporairement indisponible, "
+        "ou chemin de config different d'une session a l'autre. "
+        "Relancez, ou definissez RAGUIA_AGENT_TOKEN, ou mettez le jeton en clair dans YAML "
+        "(secure_token_storage: false) puis remettez le trousseau via le menu de l'icone."
     )
 
 
@@ -230,7 +221,7 @@ def _migrate_plaintext_token_to_keyring(path: Path | None, raw_data: dict[str, A
         updated = dict(raw_data)
         updated["agent_token"] = stored_value
         with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(updated, f, default_flow_style=False, allow_unicode=True)
+            yaml.dump(updated, f, default_flow_style=False)
         try:
             os.chmod(path, 0o600)
         except Exception:

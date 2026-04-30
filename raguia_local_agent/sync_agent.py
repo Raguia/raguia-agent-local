@@ -59,8 +59,6 @@ class SyncAgent:
 
         self._stop = threading.Event()
         self._syncing = threading.Event()
-        # Réveille run_forever() pour court-circuiter le sleep entre deux polls.
-        self._wake = threading.Event()
 
         # Callback pour le tray (optionnel)
         self.on_status_change: Optional[Callable] = None
@@ -274,14 +272,11 @@ class SyncAgent:
                 self.queue.mark_error(meta["relative_path"], err_txt)
             if e.response.status_code == 401:
                 log.error(
-                    "Upload refuse (401) : %s — reconnectez l'agent via l'icone "
-                    "« Se connecter / Reconnecter » (meme URL api_base / meme backend en dev).",
+                    "Upload refuse (401) : %s — regenerez le jeton depuis le portail "
+                    "(meme URL api_base / meme backend qu'a l'emission du JWT en dev).",
                     detail,
                 )
-                self._emit(
-                    "error",
-                    "Session agent invalide (401) — reconnectez-vous via l'icone",
-                )
+                self._emit("error", (detail or "401 Unauthorized")[:120])
             else:
                 log.exception("Upload echoue (%s)", reason)
                 self._emit("error", err_txt[:80])
@@ -296,35 +291,10 @@ class SyncAgent:
         self.store.save()
         return metrics
 
-    def _sleep_interruptible(self, seconds: float) -> None:
-        """Attend ``seconds`` ou jusqu'à ce que ``_stop`` ou ``_wake`` soit set.
-
-        Permet à ``force_sync()`` de raccourcir le poll. ``_wake`` est
-        nettoyé ici pour pouvoir être re-déclenché au prochain cycle.
-        """
-        seconds = max(0.0, float(seconds))
-        end = time.monotonic() + seconds
-        while True:
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                return
-            chunk = min(0.5, remaining)
-            if self._stop.wait(chunk):
-                return
-            if self._wake.is_set():
-                self._wake.clear()
-                return
-
     def force_sync(self) -> None:
-        """Déclenche un cycle immédiatement (depuis le tray).
-
-        Réveille la boucle ``run_forever`` qui était en attente sur
-        ``self._stop.wait(poll_interval_seconds)`` afin que l'utilisateur
-        n'attende pas jusqu'à 30 s après un clic « Synchroniser maintenant ».
-        """
+        """Declenche un cycle immediatement (depuis le tray)."""
         if not self._syncing.is_set():
             self._syncing.set()
-        self._wake.set()
 
     # ------------------------------------------------------------------
     # Boucle principale
@@ -380,15 +350,15 @@ class SyncAgent:
                             self._last_401_log_ts = now_t
                             log.error(
                                 "Jeton agent refuse par le portail (401) : %s\n"
-                                "  → Reconnectez l'agent via le menu icone « Se connecter / Reconnecter » "
-                                "ou verifiez api_base.\n"
+                                "  → Portail : emettre un nouveau jeton (POST …/agent/issue-token) "
+                                "et menu icone « Mettre a jour le jeton JWT », ou verifier api_base.\n"
                                 "  → Dev local : le JWT doit etre signe par ce backend (SECRET_KEY), "
                                 "pas copie depuis la prod.",
                                 detail or e,
                             )
                         self._emit(
                             "error",
-                            "Session agent invalide (401) — reconnectez-vous via l'icone",
+                            (detail or "401 — jeton agent invalide")[:160],
                         )
                     elif he:
                         log.warning(
@@ -439,7 +409,7 @@ class SyncAgent:
                         self._last_auth_skip_log_ts = now_s
                         log.warning(
                             "Cycle %s ignore tant que le jeton est refuse (401). "
-                            "Forcez « Synchroniser maintenant » apres correction, ou reconnectez l'agent.",
+                            "Forcez « Synchroniser maintenant » apres correction, ou mettez a jour le JWT.",
                             reason,
                         )
 
@@ -498,13 +468,12 @@ class SyncAgent:
                                     pending,
                                 )
 
-                # Si le portail est toujours injoignable et aucune synchro lancée,
-                # attendre avant le prochain poll (réveillable par force_sync).
+                # Si le portail est toujours injoignable et aucune synchro lancee, attendre avant le prochain poll
                 if not sync_ok and not reason:
-                    self._sleep_interruptible(self.cfg.poll_interval_seconds)
+                    self._stop.wait(self.cfg.poll_interval_seconds)
                     continue
 
-                self._sleep_interruptible(self.cfg.poll_interval_seconds)
+                self._stop.wait(self.cfg.poll_interval_seconds)
 
         finally:
             obs.stop()
@@ -533,14 +502,11 @@ class SyncAgent:
             if not exp:
                 return
             days = (exp - _time.time()) / 86400
-            if days <= 7:
-                if days <= 0:
-                    log.warning("Token expire. Tentative de refresh silencieux...")
-                else:
-                    log.info(
-                        "Token expire dans %.1f jours. Tentative de renouvellement automatique...",
-                        days,
-                    )
+            if days <= 0:
+                log.error("Token EXPIRE ! Renouvelez depuis le portail.")
+                self._emit("error", "Token expire")
+            elif days <= 7:
+                log.info("Token expire dans %.1f jours. Tentative de renouvellement automatique...", days)
                 try:
                     res = self.client.refresh_token()
                     new_token = res.get("access_token")
@@ -550,18 +516,8 @@ class SyncAgent:
                         log.info("Token renouvele avec succes !")
                         self._emit("idle")
                 except Exception as e:
-                    if days <= 0:
-                        log.error("Echec du refresh silencieux (token deja expire) : %s", e)
-                        self._emit(
-                            "error",
-                            "Session expiree — reconnectez-vous via l'icone",
-                        )
-                    else:
-                        log.error("Echec du renouvellement auto du token : %s", e)
-                        self._emit(
-                            "warning",
-                            f"Token expire dans {days:.0f} j (echec refresh)",
-                        )
+                    log.error("Echec du renouvellement auto du token : %s", e)
+                    self._emit("warning", f"Token expire dans {days:.0f} j (echec refresh)")
             else:
                 log.debug("Token valide (%.0f jours restants)", days)
         except Exception as e:
@@ -611,30 +567,15 @@ class SyncAgent:
         self._stop.set()
 
     def update_agent_token(self, token: str) -> None:
-        """Met à jour le JWT en mémoire et débloque les fichiers stagnés.
-
-        Effet immédiat pour les appels API suivants. Réinitialise aussi les
-        compteurs de tentatives des fichiers bloqués : sans ça, après une
-        session expirée prolongée (plusieurs cycles en 401), tous les fichiers
-        en attente passaient en « stuck » et restaient bloqués jusqu'à un clic
-        manuel — inattendu pour l'utilisateur qui vient juste de se reconnecter.
-        """
+        """Met a jour le JWT en memoire (effet immediat pour les appels API suivants)."""
         token = (token or "").strip()
         if not token:
             raise ValueError("Jeton vide")
         self.cfg.agent_token = token
         self.client.set_agent_token(token)
-        try:
-            n = self.queue.reset_stuck()
-            if n:
-                log.info("Reconnexion : %d fichier(s) débloqués automatiquement.", n)
-        except Exception as e:
-            log.debug("Reset des fichiers bloqués impossible : %s", e)
-        # Force un nouveau cycle pour reprendre tout de suite.
-        self._wake.set()
 
     def update_api_base(self, api_base: str) -> None:
-        """Met à jour api_base à chaud (client HTTP + updater)."""
+        """Met a jour api_base a chaud (client HTTP + updater)."""
         api_base = (api_base or "").strip().rstrip("/")
         if not api_base:
             raise ValueError("URL du portail vide")
@@ -646,5 +587,3 @@ class SyncAgent:
             old_client.close()
         except Exception:
             pass
-        # Réveille la boucle pour rebrancher tout de suite sur la nouvelle URL.
-        self._wake.set()
