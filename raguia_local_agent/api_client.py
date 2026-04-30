@@ -18,11 +18,11 @@ log = logging.getLogger(__name__)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
-def _ssl_verify():
-    """Retourne le bundle CA certifi.
+def ssl_verify():
+    """Retourne le bundle CA certifi (chemin absolu).
 
     En mode binaire PyInstaller (sys.frozen), certifi.where() pointe vers le
-    fichier extrait dans sys._MEIPASS — le chemin absolu est préférable à True
+    fichier extrait dans sys._MEIPASS. Le chemin absolu est préférable à True
     (qui ferait une résolution interne à l'import) pour éviter un éventuel
     problème de lookup dans certains builds Windows.
     """
@@ -33,13 +33,18 @@ def _ssl_verify():
         return True
 
 
-def _trust_env() -> bool:
+def trust_env() -> bool:
     """Respecte les proxies d'environnement si RAGUIA_TRUST_ENV=1.
 
     Par défaut False (sécurité : évite les détournements via HTTP_PROXY).
     À activer sur les réseaux d'entreprise nécessitant un proxy explicite.
     """
     return os.environ.get("RAGUIA_TRUST_ENV", "").lower() in ("1", "true", "yes")
+
+
+# Alias internes (compat code existant)
+_ssl_verify = ssl_verify
+_trust_env = trust_env
 
 
 def http_response_detail(response: httpx.Response) -> str:
@@ -69,6 +74,8 @@ def validate_api_base(api_base: str) -> str:
 
     - HTTPS requis, sauf localhost (dev local)
     - interdit les URL de page (/portal/...) au lieu de la racine
+    - normalise les fins de chemin courantes (``/api``, ``/api/portal``)
+      qu'un utilisateur pourrait copier-coller depuis sa barre d'adresse.
     """
     base = (api_base or "").strip().rstrip("/")
     if not base:
@@ -80,16 +87,25 @@ def validate_api_base(api_base: str) -> str:
     local_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
     if parsed.scheme == "http" and host not in local_hosts:
         raise ValueError("L'URL du portail doit utiliser https:// (sauf localhost).")
-    if "/portal/" in (parsed.path or ""):
-        raise ValueError("Utilisez la racine du portail (ex: https://mon-domaine.tld), pas une page /portal/...")
-    return base
+    path = parsed.path or ""
+    if "/portal/" in path:
+        raise ValueError(
+            "Utilisez la racine du portail (ex: https://mon-domaine.tld), "
+            "pas une page /portal/<slug>."
+        )
+    # Tolérance : strip un suffixe /api ou /api/portal si présent (erreur courante).
+    for suffix in ("/api/portal", "/api"):
+        if path.lower().rstrip("/").endswith(suffix):
+            cut = len(parsed.scheme) + 3 + len(parsed.netloc)
+            base = base[:cut] + path[: len(path) - len(suffix)].rstrip("/")
+            break
+    return base.rstrip("/")
 
 
 def _request_with_retry(
     client: httpx.Client, method: str, url: str, *, retries: int = _MAX_RETRIES, **kwargs
 ) -> httpx.Response:
-    """Effectue une requete HTTP avec retry exponentiel sur erreurs transitoires."""
-    last_exc: Exception | None = None
+    """Effectue une requête HTTP avec retry exponentiel sur erreurs transitoires."""
     delay = _RETRY_BACKOFF
     for attempt in range(retries + 1):
         try:
@@ -102,7 +118,6 @@ def _request_with_retry(
                 continue
             return r
         except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
-            last_exc = e
             if attempt < retries:
                 log.warning("Erreur reseau %s (tentative %d/%d), retry dans %.1fs: %s",
                             url, attempt + 1, retries, delay, e)
@@ -110,7 +125,8 @@ def _request_with_retry(
                 delay *= 2
             else:
                 raise
-    raise last_exc  # type: ignore[misc]
+    # Inatteignable : la dernière itération renvoie ou propage explicitement.
+    raise RuntimeError(f"_request_with_retry: epuisement des tentatives pour {url}")
 
 
 def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any]:
@@ -134,8 +150,8 @@ def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any
         )
 
         if r.status_code in (404, 405):
-            # Compat migration: backend non encore mis a jour avec /agent/login.
-            # Fallback: login portail puis issue-token (sans revoke).
+            # Compat migration : backend non encore mis à jour avec /agent/login.
+            # Fallback : login portail puis issue-token (sans revoke).
             login_r = _request_with_retry(
                 client,
                 "POST",
@@ -173,11 +189,11 @@ def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any
                 "client_slug": s,
             }
 
-    r.raise_for_status()
-    payload = r.json()
-    if not isinstance(payload, dict):
-        raise ValueError("Réponse login agent invalide (JSON objet attendu).")
-    return payload
+        r.raise_for_status()
+        payload = r.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Réponse login agent invalide (JSON objet attendu).")
+        return payload
 
 
 class PortalApiClient:

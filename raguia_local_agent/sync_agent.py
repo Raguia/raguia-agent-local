@@ -59,6 +59,8 @@ class SyncAgent:
 
         self._stop = threading.Event()
         self._syncing = threading.Event()
+        # Réveille run_forever() pour court-circuiter le sleep entre deux polls.
+        self._wake = threading.Event()
 
         # Callback pour le tray (optionnel)
         self.on_status_change: Optional[Callable] = None
@@ -294,10 +296,35 @@ class SyncAgent:
         self.store.save()
         return metrics
 
+    def _sleep_interruptible(self, seconds: float) -> None:
+        """Attend ``seconds`` ou jusqu'à ce que ``_stop`` ou ``_wake`` soit set.
+
+        Permet à ``force_sync()`` de raccourcir le poll. ``_wake`` est
+        nettoyé ici pour pouvoir être re-déclenché au prochain cycle.
+        """
+        seconds = max(0.0, float(seconds))
+        end = time.monotonic() + seconds
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return
+            chunk = min(0.5, remaining)
+            if self._stop.wait(chunk):
+                return
+            if self._wake.is_set():
+                self._wake.clear()
+                return
+
     def force_sync(self) -> None:
-        """Declenche un cycle immediatement (depuis le tray)."""
+        """Déclenche un cycle immédiatement (depuis le tray).
+
+        Réveille la boucle ``run_forever`` qui était en attente sur
+        ``self._stop.wait(poll_interval_seconds)`` afin que l'utilisateur
+        n'attende pas jusqu'à 30 s après un clic « Synchroniser maintenant ».
+        """
         if not self._syncing.is_set():
             self._syncing.set()
+        self._wake.set()
 
     # ------------------------------------------------------------------
     # Boucle principale
@@ -471,12 +498,13 @@ class SyncAgent:
                                     pending,
                                 )
 
-                # Si le portail est toujours injoignable et aucune synchro lancee, attendre avant le prochain poll
+                # Si le portail est toujours injoignable et aucune synchro lancée,
+                # attendre avant le prochain poll (réveillable par force_sync).
                 if not sync_ok and not reason:
-                    self._stop.wait(self.cfg.poll_interval_seconds)
+                    self._sleep_interruptible(self.cfg.poll_interval_seconds)
                     continue
 
-                self._stop.wait(self.cfg.poll_interval_seconds)
+                self._sleep_interruptible(self.cfg.poll_interval_seconds)
 
         finally:
             obs.stop()
@@ -583,15 +611,30 @@ class SyncAgent:
         self._stop.set()
 
     def update_agent_token(self, token: str) -> None:
-        """Met a jour le JWT en memoire (effet immediat pour les appels API suivants)."""
+        """Met à jour le JWT en mémoire et débloque les fichiers stagnés.
+
+        Effet immédiat pour les appels API suivants. Réinitialise aussi les
+        compteurs de tentatives des fichiers bloqués : sans ça, après une
+        session expirée prolongée (plusieurs cycles en 401), tous les fichiers
+        en attente passaient en « stuck » et restaient bloqués jusqu'à un clic
+        manuel — inattendu pour l'utilisateur qui vient juste de se reconnecter.
+        """
         token = (token or "").strip()
         if not token:
             raise ValueError("Jeton vide")
         self.cfg.agent_token = token
         self.client.set_agent_token(token)
+        try:
+            n = self.queue.reset_stuck()
+            if n:
+                log.info("Reconnexion : %d fichier(s) débloqués automatiquement.", n)
+        except Exception as e:
+            log.debug("Reset des fichiers bloqués impossible : %s", e)
+        # Force un nouveau cycle pour reprendre tout de suite.
+        self._wake.set()
 
     def update_api_base(self, api_base: str) -> None:
-        """Met a jour api_base a chaud (client HTTP + updater)."""
+        """Met à jour api_base à chaud (client HTTP + updater)."""
         api_base = (api_base or "").strip().rstrip("/")
         if not api_base:
             raise ValueError("URL du portail vide")
@@ -603,3 +646,5 @@ class SyncAgent:
             old_client.close()
         except Exception:
             pass
+        # Réveille la boucle pour rebrancher tout de suite sur la nouvelle URL.
+        self._wake.set()

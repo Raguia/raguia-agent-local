@@ -95,7 +95,7 @@ def _remove_windows_autostart() -> None:
 def _resolve_agent_config_path() -> Path:
     cfg_path = os.environ.get("RAGUIA_AGENT_CONFIG")
     if cfg_path:
-        return Path(cfg_path)
+        return Path(cfg_path).expanduser()
     return Path.home() / ".raguia" / "config.yaml"
 
 

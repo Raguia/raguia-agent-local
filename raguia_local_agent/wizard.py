@@ -398,7 +398,7 @@ class SetupWizard:
             "watch_parent": self.var_dir.get(),
         }
         with open(config_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True)
+            yaml.safe_dump(data, f, allow_unicode=True, default_flow_style=False)
 
         try:
             os.chmod(config_path, 0o600)

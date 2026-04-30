@@ -18,6 +18,7 @@ import hashlib
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -25,6 +26,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+from .api_client import ssl_verify, trust_env
 
 log = logging.getLogger(__name__)
 
@@ -153,7 +156,8 @@ class AgentUpdater:
         r = httpx.get(
             url,
             timeout=20.0,
-            trust_env=False,
+            verify=ssl_verify(),
+            trust_env=trust_env(),
             headers={"Accept": "application/vnd.github+json"},
             follow_redirects=True,
         )
@@ -248,7 +252,13 @@ class AgentUpdater:
         if not sha_url:
             raise ValueError("URL du fichier SHA256 manquante.")
 
-        r = httpx.get(sha_url, timeout=20.0, trust_env=False, follow_redirects=True)
+        r = httpx.get(
+            sha_url,
+            timeout=20.0,
+            verify=ssl_verify(),
+            trust_env=trust_env(),
+            follow_redirects=True,
+        )
         r.raise_for_status()
         sha256 = _parse_sha256_text(r.text or "")
         if not sha256:
@@ -362,7 +372,8 @@ class AgentUpdater:
                 download_url,
                 timeout=300.0,
                 follow_redirects=True,
-                trust_env=False,
+                verify=ssl_verify(),
+                trust_env=trust_env(),
             )
             r.raise_for_status()
         except Exception:
@@ -450,19 +461,36 @@ class AgentUpdater:
 # ------------------------------------------------------------------
 
 def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
-    """Spawne cmd.exe détaché : attend la sortie de l'agent, déplace, relance."""
+    """Spawne cmd.exe détaché : attend la sortie de l'agent, déplace, relance.
+
+    Retry jusqu'à ~30 s : sur Windows, le ``move`` échoue tant que le binaire
+    courant est encore mappé en mémoire. L'agent peut mettre quelques secondes
+    à libérer ses ressources (queue SQLite, sockets, etc.).
+    """
     cur = str(current_exe)
     new = str(pending_exe)
-    # Guillemets doublés dans la commande cmd pour gérer les espaces dans les chemins
-    cmd_str = (
-        f'timeout /t {_REPLACE_DELAY_S} /nobreak >nul'
-        f' & move /y "{new}" "{cur}"'
-        f' & start "" "{cur}"'
+    # Boucle PowerShell : attente initiale puis retry du Move-Item pendant 30 s.
+    # On préfère PowerShell à cmd pour la gestion d'erreur fiable et l'attente
+    # active tant que le fichier source est verrouillé.
+    ps_cmd = (
+        f"Start-Sleep -Seconds {_REPLACE_DELAY_S};"
+        f"$src = '{new}'.Replace(\"'\",\"''\");"
+        f"$dst = '{cur}'.Replace(\"'\",\"''\");"
+        "$ok = $false;"
+        "for ($i = 0; $i -lt 30; $i++) {"
+        "  try { Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop;"
+        "        $ok = $true; break }"
+        "  catch { Start-Sleep -Seconds 1 }"
+        "};"
+        # Lance le binaire (nouveau ou ancien si le swap a échoué) sans console.
+        "if ($ok) { Start-Process -FilePath $dst -WindowStyle Hidden }"
+        "else { if (Test-Path -LiteralPath $dst) { Start-Process -FilePath $dst -WindowStyle Hidden } }"
     )
     try:
+        pwsh = shutil.which("powershell") or "powershell.exe"
         subprocess.Popen(
-            ["cmd", "/c", cmd_str],
-            creationflags=0x08000000 | 0x00000008,  # CREATE_NO_WINDOW | DETACHED_PROCESS
+            [pwsh, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+            creationflags=0x08000000 | 0x00000008,
             close_fds=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
