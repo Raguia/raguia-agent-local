@@ -16,17 +16,26 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _resolved_runner_python() -> str:
-    """Python pour sous-processus Tk : ``sys.executable`` peut pointer vers un binaire absent
-    (venv recréé avec seulement ``python``, ancien ``python3`` supprimé, lien cassé).
+def _resolved_runner_python() -> str | None:
+    """Python pour sous-processus Tk.
+
+    Retourne le chemin vers un interpréteur Python capable d'exécuter ``-c <code>``,
+    ou ``None`` si aucun n'est trouvé (les appelants tombent alors sur leur fallback
+    natif : PowerShell/osascript/zenity).
+
+    En mode binaire PyInstaller, ``sys.executable`` pointe vers le bootloader de
+    l'application (pas un interpréteur Python). Le passer comme interpréteur
+    démarrerait une seconde instance de l'agent au lieu d'exécuter le script Tk.
     """
     if getattr(sys, "frozen", False):
-        # En binaire PyInstaller, sys.executable pointe vers l'app/bootloader
-        # (pas toujours capable d'executer "python -c ...").
+        # Binaire PyInstaller : chercher un Python système dans le PATH uniquement.
         for name in ("python3", "python"):
             p = shutil.which(name)
             if p:
                 return p
+        # Aucun Python système trouvé → les appelants doivent utiliser leur fallback natif.
+        return None
+
     exe = Path(sys.executable)
     if exe.is_file():
         return str(exe.resolve())
@@ -41,7 +50,7 @@ def _resolved_runner_python() -> str:
             p = parent / name
             if p.is_file():
                 return str(p.resolve())
-    return sys.executable
+    return None
 
 
 def _run_osascript(script: str) -> subprocess.CompletedProcess | None:
@@ -149,9 +158,17 @@ def _windows_prompt_text(title: str, prompt: str, masked: bool = False) -> str |
     return raw if raw else None
 
 
-def _run_tk_subprocess(code: str) -> subprocess.CompletedProcess:
+def _run_tk_subprocess(code: str) -> subprocess.CompletedProcess | None:
+    """Lance un sous-processus Python pour afficher une fenêtre Tk.
+
+    Retourne ``None`` si aucun interpréteur Python n'est disponible (binaire gelé
+    sans Python système) afin que les appelants activent leur fallback natif.
+    """
+    python = _resolved_runner_python()
+    if python is None:
+        return None
     return subprocess.run(
-        [_resolved_runner_python(), "-c", code],
+        [python, "-c", code],
         env={**os.environ, "TK_SILENCE_DEPRECATION": "1", "PYTHONUTF8": "1"},
         timeout=600,
         capture_output=True,
@@ -190,11 +207,11 @@ def prompt_agent_token() -> str | None:
             "    f.write((t or '').strip())\n"
         )
         r = _run_tk_subprocess(script)
-        if r.returncode != 0:
+        if not r or r.returncode != 0:
             log.warning(
                 "prompt_agent_token: code=%s stderr=%s",
-                r.returncode,
-                (r.stderr or "")[:500],
+                r.returncode if r else "no-python",
+                (r.stderr or "")[:500] if r else "",
             )
             if sys.platform == "darwin":
                 prompt = _as_quote("Collez le nouveau jeton JWT agent :")
@@ -299,7 +316,7 @@ def prompt_portal_login() -> tuple[str, str] | None:
             "        f.write('__CANCEL__\\n')\n"
         )
         r = _run_tk_subprocess(script)
-        if r.returncode == 0:
+        if r and r.returncode == 0:
             raw = Path(path).read_text(encoding='utf-8').splitlines()
             if raw and raw[0].strip() == "__CANCEL__":
                 return None
@@ -365,8 +382,12 @@ def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:
             "    f.write((t or '').strip())\n"
         )
         r = _run_tk_subprocess(script)
-        if r.returncode != 0:
-            log.warning("prompt_text: code=%s stderr=%s", r.returncode, (r.stderr or "")[:500])
+        if not r or r.returncode != 0:
+            log.warning(
+                "prompt_text: code=%s stderr=%s",
+                r.returncode if r else "no-python",
+                (r.stderr or "")[:500] if r else "",
+            )
             if sys.platform == "darwin":
                 hidden = " with hidden answer" if masked else ""
                 prompt_as = _as_quote(prompt)
@@ -431,8 +452,8 @@ def show_message(title: str, message: str, *, kind: str = "info") -> None:
     )
     try:
         r = _run_tk_subprocess(script)
-        if r.returncode != 0:
-            log.warning("show_message: %s", (r.stderr or "")[:300])
+        if not r or r.returncode != 0:
+            log.warning("show_message: %s", (r.stderr or "")[:300] if r else "no-python")
             if sys.platform == "darwin":
                 icon = "stop" if kind == "error" else ("caution" if kind == "warning" else "note")
                 message_as = _as_quote(message)
@@ -488,9 +509,13 @@ def confirm_git_pull_update(
     )
     try:
         r = _run_tk_subprocess(script)
-        if r.returncode == 0:
+        if r and r.returncode == 0:
             return (r.stdout or "").strip() == "1"
-        log.warning("confirm_git_pull_update: code=%s stderr=%s", r.returncode, (r.stderr or "")[:300])
+        log.warning(
+            "confirm_git_pull_update: code=%s stderr=%s",
+            r.returncode if r else "no-python",
+            (r.stderr or "")[:300] if r else "",
+        )
         if sys.platform == "darwin":
             body_as = _as_quote(body)
             title_as = _as_quote("Raguia — Mise a jour depuis Git")
@@ -550,9 +575,13 @@ def confirm_agent_update(current_version: str, new_version: str) -> bool:
     )
     try:
         r = _run_tk_subprocess(script)
-        if r.returncode == 0:
+        if r and r.returncode == 0:
             return (r.stdout or "").strip() == "1"
-        log.warning("confirm_agent_update: code=%s stderr=%s", r.returncode, (r.stderr or "")[:300])
+        log.warning(
+            "confirm_agent_update: code=%s stderr=%s",
+            r.returncode if r else "no-python",
+            (r.stderr or "")[:300] if r else "",
+        )
         if sys.platform == "darwin":
             body_as = _as_quote(body)
             title_as = _as_quote("Raguia — Mise a jour")
@@ -610,9 +639,13 @@ def confirm_uninstall() -> bool:
     )
     try:
         r = _run_tk_subprocess(script)
-        if r.returncode == 0:
+        if r and r.returncode == 0:
             return (r.stdout or "").strip() == "1"
-        log.warning("confirm_uninstall: code=%s stderr=%s", r.returncode, (r.stderr or "")[:300])
+        log.warning(
+            "confirm_uninstall: code=%s stderr=%s",
+            r.returncode if r else "no-python",
+            (r.stderr or "")[:300] if r else "",
+        )
         if sys.platform == "darwin":
             body_as = _as_quote(body)
             title_as = _as_quote("Raguia — Desinstallation")

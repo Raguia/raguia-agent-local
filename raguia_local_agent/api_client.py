@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -15,6 +16,30 @@ import httpx
 log = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+def _ssl_verify():
+    """Retourne le bundle CA certifi.
+
+    En mode binaire PyInstaller (sys.frozen), certifi.where() pointe vers le
+    fichier extrait dans sys._MEIPASS — le chemin absolu est préférable à True
+    (qui ferait une résolution interne à l'import) pour éviter un éventuel
+    problème de lookup dans certains builds Windows.
+    """
+    try:
+        import certifi
+        return certifi.where()
+    except Exception:
+        return True
+
+
+def _trust_env() -> bool:
+    """Respecte les proxies d'environnement si RAGUIA_TRUST_ENV=1.
+
+    Par défaut False (sécurité : évite les détournements via HTTP_PROXY).
+    À activer sur les réseaux d'entreprise nécessitant un proxy explicite.
+    """
+    return os.environ.get("RAGUIA_TRUST_ENV", "").lower() in ("1", "true", "yes")
 
 
 def http_response_detail(response: httpx.Response) -> str:
@@ -97,7 +122,9 @@ def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any
         raise ValueError("Slug client manquant")
     if not p:
         raise ValueError("Mot de passe portail manquant")
-    with httpx.Client(trust_env=False, follow_redirects=False) as client:
+    with httpx.Client(
+        verify=_ssl_verify(), trust_env=_trust_env(), follow_redirects=False
+    ) as client:
         r = _request_with_retry(
             client,
             "POST",
@@ -158,9 +185,9 @@ class PortalApiClient:
         self.api_base = validate_api_base(api_base)
         self.agent_token = agent_token
         self._headers = {"Authorization": f"Bearer {agent_token}"}
-        # Securite: ignorer les proxies d'environnement (HTTP(S)_PROXY)
         self._client = httpx.Client(
-            trust_env=False,
+            verify=_ssl_verify(),
+            trust_env=_trust_env(),
             follow_redirects=False,
             headers=self._headers,
         )
@@ -169,7 +196,8 @@ class PortalApiClient:
         """Recree le client httpx si la boucle agent a appele close() (diagnostic / jeton)."""
         if getattr(self._client, "is_closed", False):
             self._client = httpx.Client(
-                trust_env=False,
+                verify=_ssl_verify(),
+                trust_env=_trust_env(),
                 follow_redirects=False,
                 headers=dict(self._headers),
             )
@@ -210,7 +238,8 @@ class PortalApiClient:
         self._headers = {"Authorization": f"Bearer {token}"}
         if getattr(self._client, "is_closed", False):
             self._client = httpx.Client(
-                trust_env=False,
+                verify=_ssl_verify(),
+                trust_env=_trust_env(),
                 follow_redirects=False,
                 headers=dict(self._headers),
             )
