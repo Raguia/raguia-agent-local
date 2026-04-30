@@ -23,13 +23,18 @@ def _credential_id(config_path: Path | None) -> str:
 def _credential_id_candidates(config_path: Path | None) -> list[str]:
     """IDs possibles (compat anciennes versions / chemins variants)."""
     ids: list[str] = []
+    default_config = Path.home() / ".raguia" / "config.yaml"
+    is_default_config = config_path is None
     if config_path is not None:
         raw = str(config_path)
         expanded = str(config_path.expanduser())
         try:
-            resolved = str(config_path.expanduser().resolve())
+            resolved_path = config_path.expanduser().resolve()
+            resolved = str(resolved_path)
+            is_default_config = resolved_path == default_config.resolve()
         except Exception:
             resolved = expanded
+            is_default_config = Path(expanded) == default_config.expanduser()
         ids.extend([resolved, expanded, raw])
 
     # Compat historique:

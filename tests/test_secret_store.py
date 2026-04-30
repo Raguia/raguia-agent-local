@@ -24,6 +24,20 @@ def test_save_and_load_token_with_keyring(monkeypatch, tmp_path: Path):
     assert secret_store.load_token(cfg, stored) == "jwt-123"
 
 
+def test_default_alias_does_not_leak_token_to_other_configs(monkeypatch, tmp_path: Path):
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_get_keyring_module", lambda: fake)
+
+    default_cfg = Path.home() / ".raguia" / "config.yaml"
+    custom_cfg = tmp_path / "tenant-b.yaml"
+
+    stored = secret_store.save_token(default_cfg, "tenant-a-token")
+
+    assert stored == secret_store.KEYRING_SENTINEL
+    assert secret_store.load_token(default_cfg, stored) == "tenant-a-token"
+    assert secret_store.load_token(custom_cfg, stored) == ""
+
+
 def test_save_token_falls_back_without_keyring(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(secret_store, "_get_keyring_module", lambda: None)
     cfg = tmp_path / "config.yaml"
