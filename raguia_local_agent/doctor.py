@@ -103,7 +103,9 @@ def _windows_autostart_enabled() -> bool:
 
     try:
         startup = Path(
-            os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
+            os.path.expandvars(
+                r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+            )
         )
         return (startup / "Raguia Agent.lnk").is_file()
     except Exception:
@@ -116,7 +118,10 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
 
     # Config URL
     parsed = urlparse(cfg.api_base)
-    if parsed.scheme == "https" or (parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}):
+    if parsed.scheme == "https" or (
+        parsed.scheme == "http"
+        and parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    ):
         lines.append(_ok("URL portail valide"))
     else:
         has_error = True
@@ -124,23 +129,43 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
 
     # Token storage
     cfg_path = cfg.cfg_path or (Path.home() / ".raguia" / "config.yaml")
-    raw_token = ""
+    raw_password = ""
+    raw_legacy_token = ""
     if cfg_path.is_file():
         try:
             import yaml
 
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            raw_token = str(raw.get("agent_token") or "")
+            raw_password = str(raw.get("agent_password") or "")
+            raw_legacy_token = str(raw.get("agent_token") or "")
         except Exception:
-            raw_token = ""
+            raw_password = ""
+            raw_legacy_token = ""
     keyring = _get_keyring_module()
     keyring_available = keyring is not None
-    if raw_token == KEYRING_SENTINEL:
-        lines.append(_ok("Token stocke dans le trousseau OS"))
-    elif keyring_available:
-        lines.append(_warn("Session en mode compatible", "Reconnectez-vous via le menu tray pour securiser la session"))
+    if raw_password == KEYRING_SENTINEL:
+        lines.append(_ok("Mot de passe stocke dans le trousseau OS"))
+    elif raw_password and keyring_available:
+        lines.append(
+            _warn(
+                "Mot de passe en mode compatible",
+                "Reconnectez-vous via le menu tray pour securiser la session",
+            )
+        )
+    elif raw_legacy_token:
+        lines.append(
+            _warn(
+                "Session legacy par token",
+                "La reconnexion automatique apres expiration necessite le mot de passe portail",
+            )
+        )
     else:
-        lines.append(_warn("Trousseau OS indisponible", "Mode compatibilite actif"))
+        lines.append(
+            _warn(
+                "Trousseau OS indisponible",
+                "Mode compatibilite actif ou session absente",
+            )
+        )
 
     # Queue state
     pending = agent.queue.pending_count()
@@ -164,9 +189,19 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
         if os.name == "nt":
             enabled = _windows_autostart_enabled()
         elif sys.platform == "darwin":
-            enabled = (Path.home() / "Library" / "LaunchAgents" / "com.raguia.local.agent.plist").is_file()
+            enabled = (
+                Path.home()
+                / "Library"
+                / "LaunchAgents"
+                / "com.raguia.local.agent.plist"
+            ).is_file()
         else:
-            unit = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd" / "user" / "raguia-agent.service"
+            unit = (
+                Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+                / "systemd"
+                / "user"
+                / "raguia-agent.service"
+            )
             enabled = unit.is_file()
         if enabled:
             lines.append(_ok("Demarrage automatique configure"))
@@ -182,4 +217,3 @@ def run_doctor(cfg, agent) -> tuple[bool, str]:
     except Exception:
         pass
     return (not has_error), summary
-

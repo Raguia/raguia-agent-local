@@ -203,7 +203,40 @@ if errorlevel 1 (
 :after_conn_test
 
 echo.
-echo 5. Raccourci Demarrage Windows...
+echo 5. Scripts de controle...
+echo @echo off > "%AGENT_DIR%\start.bat"
+echo setlocal >> "%AGENT_DIR%\start.bat"
+echo cd /d "%%~dp0" >> "%AGENT_DIR%\start.bat"
+echo for %%%%I in ^("%%~dp0.."^) do set "RAGUIA_AGENT_REPO=%%%%~fI" >> "%AGENT_DIR%\start.bat"
+echo set "RAGUIA_AGENT_CONFIG=%%~dp0raguia_agent.yaml" >> "%AGENT_DIR%\start.bat"
+echo if not exist "%%RAGUIA_AGENT_CONFIG%%" ^(echo Erreur: configuration introuvable ^(%%RAGUIA_AGENT_CONFIG%%^). Lancez install.bat. ^& exit /b 1^) >> "%AGENT_DIR%\start.bat"
+echo if not exist "venv\Scripts\python.exe" ^(echo Erreur: interprete venv introuvable. Relancez install.bat. ^& exit /b 1^) >> "%AGENT_DIR%\start.bat"
+echo "venv\Scripts\python.exe" -m raguia_local_agent %%* >> "%AGENT_DIR%\start.bat"
+echo set "EXIT_CODE=%%ERRORLEVEL%%" >> "%AGENT_DIR%\start.bat"
+echo endlocal ^& exit /b %%EXIT_CODE%% >> "%AGENT_DIR%\start.bat"
+
+echo @echo off > "%AGENT_DIR%\test.bat"
+echo setlocal >> "%AGENT_DIR%\test.bat"
+echo cd /d "%%~dp0" >> "%AGENT_DIR%\test.bat"
+echo for %%%%I in ^("%%~dp0.."^) do set "RAGUIA_AGENT_REPO=%%%%~fI" >> "%AGENT_DIR%\test.bat"
+echo set "RAGUIA_AGENT_CONFIG=%%~dp0raguia_agent.yaml" >> "%AGENT_DIR%\test.bat"
+echo if not exist "%%RAGUIA_AGENT_CONFIG%%" ^(echo Erreur: configuration introuvable ^(%%RAGUIA_AGENT_CONFIG%%^). Lancez install.bat. ^& exit /b 1^) >> "%AGENT_DIR%\test.bat"
+echo if not exist "venv\Scripts\python.exe" ^(echo Erreur: interprete venv introuvable. Relancez install.bat. ^& exit /b 1^) >> "%AGENT_DIR%\test.bat"
+echo "venv\Scripts\python.exe" -m raguia_local_agent --test %%* >> "%AGENT_DIR%\test.bat"
+echo set "EXIT_CODE=%%ERRORLEVEL%%" >> "%AGENT_DIR%\test.bat"
+echo endlocal ^& exit /b %%EXIT_CODE%% >> "%AGENT_DIR%\test.bat"
+
+echo @echo off > "%AGENT_DIR%\stop.bat"
+echo if exist "%%USERPROFILE%%\.raguia\agent.pid" ( >> "%AGENT_DIR%\stop.bat"
+echo     set /p PID=^<"%%USERPROFILE%%\.raguia\agent.pid" >> "%AGENT_DIR%\stop.bat"
+echo     taskkill /PID %%PID%% /F 2^>nul >> "%AGENT_DIR%\stop.bat"
+echo     del "%%USERPROFILE%%\.raguia\agent.pid" >> "%AGENT_DIR%\stop.bat"
+echo ) else ( >> "%AGENT_DIR%\stop.bat"
+echo     taskkill /F /IM python.exe /FI "WINDOWTITLE eq raguia_local_agent*" 2^>nul >> "%AGENT_DIR%\stop.bat"
+echo ) >> "%AGENT_DIR%\stop.bat"
+
+echo.
+echo 6. Raccourci Demarrage Windows...
 set "RAGUIA_START_BAT=%AGENT_DIR%\start.bat"
 set "RAGUIA_AGENT_DIR=%AGENT_DIR%"
 REM Une seule ligne : les ^ continuations cmd ne passent pas si install.bat est appele depuis pwsh.

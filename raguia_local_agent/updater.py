@@ -415,8 +415,8 @@ class AgentUpdater:
                     import shutil as _shutil
                     _shutil.rmtree(pending_app, ignore_errors=True)
 
-                with zipfile.ZipFile(pending_file) as zf:
-                    zf.extractall(pending_app.parent / "_unzip_tmp")
+                import subprocess
+                subprocess.run(["unzip", "-q", "-o", str(pending_file), "-d", str(pending_app.parent / "_unzip_tmp")], check=True)
 
                 # Le zip contient raguia-agent.app/ à la racine
                 extracted_app = pending_app.parent / "_unzip_tmp" / "raguia-agent.app"
@@ -476,12 +476,16 @@ def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
         f"Start-Sleep -Seconds {_REPLACE_DELAY_S};"
         f"$src = '{new}'.Replace(\"'\",\"''\");"
         f"$dst = '{cur}'.Replace(\"'\",\"''\");"
+        f"$old = \"$dst.old.exe\";"
+        "if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force -ErrorAction Ignore };"
+        "if (Test-Path -LiteralPath $dst) { Rename-Item -LiteralPath $dst -NewName (Split-Path $old -Leaf) -ErrorAction Ignore };"
         "$ok = $false;"
         "for ($i = 0; $i -lt 30; $i++) {"
         "  try { Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop;"
         "        $ok = $true; break }"
         "  catch { Start-Sleep -Seconds 1 }"
         "};"
+        "if (-not $ok -and (Test-Path -LiteralPath $old)) { Rename-Item -LiteralPath $old -NewName (Split-Path $dst -Leaf) -ErrorAction Ignore };"
         # Lance le binaire (nouveau ou ancien si le swap a échoué) sans console.
         "if ($ok) { Start-Process -FilePath $dst -WindowStyle Hidden }"
         "else { if (Test-Path -LiteralPath $dst) { Start-Process -FilePath $dst -WindowStyle Hidden } }"
@@ -514,21 +518,18 @@ def _spawn_replace_macos(current_app: Path, pending_app: Path) -> bool:
     new = shlex.quote(str(pending_app))
     bak = shlex.quote(str(current_app.with_suffix(".old.app")))
     bash_cmd = (
-        "set -euo pipefail; "
+        "set -uo pipefail; "
         f"sleep {_REPLACE_DELAY_S}; "
         f"rm -rf {bak}; "
-        f'if [ -d {cur} ]; then mv {cur} {bak}; fi; '
+        f'if [ -d {cur} ]; then mv {cur} {bak} || exit 1; fi; '
         f'if ! mv {new} {cur}; then '
         f'  if [ -d {bak} ]; then mv {bak} {cur}; fi; '
         f"  exit 1; "
         f"fi; "
         f"xattr -dr com.apple.quarantine {cur} || true; "
-        f"chmod +x {cur}/Contents/MacOS/raguia-agent || true; "
-        # -n force macOS a ouvrir une nouvelle instance meme si l'ancienne
-        # est encore en cours de fermeture (sinon open redirige vers l'existante
-        # qui est en train de mourir, et rien ne demarre).
         f"open -n {cur} || open {cur}; "
-        f"rm -rf {bak} || true"
+        f"rm -rf {bak} || true; "
+        f"rm -rf {new} || true"
     )
     try:
         subprocess.Popen(

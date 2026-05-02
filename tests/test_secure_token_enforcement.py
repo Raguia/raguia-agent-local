@@ -20,7 +20,7 @@ def test_secure_storage_refuses_plaintext_when_keyring_available(monkeypatch, tm
         yaml.dump(
             {
                 "api_base": "https://example.com",
-                "agent_token": "plain-token",
+                "agent_password": "plain-token",
                 "watch_parent": str(tmp_path),
                 "secure_token_storage": True,
             }
@@ -38,7 +38,7 @@ def test_secure_storage_does_not_block_without_keyring(monkeypatch, tmp_path: Pa
         yaml.dump(
             {
                 "api_base": "https://example.com",
-                "agent_token": "plain-token",
+                "agent_password": "plain-token",
                 "watch_parent": str(tmp_path),
                 "secure_token_storage": True,
             }
@@ -46,5 +46,5 @@ def test_secure_storage_does_not_block_without_keyring(monkeypatch, tmp_path: Pa
         encoding="utf-8",
     )
     cfg = config.load_config(cfg_path)
-    assert cfg.agent_token == "plain-token"
+    assert cfg.agent_password == "plain-token"
 

@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Optional
 
 from raguia_local_agent.api_client import PortalApiClient, http_response_detail
-from raguia_local_agent.config import APP_DATA_DIR, AgentConfig, is_first_launch, load_config
+from raguia_local_agent.config import (
+    APP_DATA_DIR,
+    AgentConfig,
+    is_first_launch,
+    load_config,
+)
 from raguia_local_agent.logging_utils import setup_logging
 from raguia_local_agent.sync_agent import SyncAgent
 
@@ -40,19 +45,20 @@ def _pid_is_running(pid: int) -> bool:
 
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.OpenProcess.argtypes = [
-                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
             ]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
             kernel32.CloseHandle.restype = wintypes.BOOL
             kernel32.GetExitCodeProcess.argtypes = [
-                wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.DWORD),
             ]
             kernel32.GetExitCodeProcess.restype = wintypes.BOOL
 
-            handle = kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-            )
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not handle:
                 return False
             try:
@@ -97,7 +103,11 @@ def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
             existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
         except Exception:
             existing_pid = 0
-        if existing_pid and existing_pid != current_pid and _pid_is_running(existing_pid):
+        if (
+            existing_pid
+            and existing_pid != current_pid
+            and _pid_is_running(existing_pid)
+        ):
             return False, None
         try:
             lock_path.unlink()
@@ -112,7 +122,11 @@ def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
             existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
         except Exception:
             existing_pid = 0
-        if existing_pid and existing_pid != current_pid and _pid_is_running(existing_pid):
+        if (
+            existing_pid
+            and existing_pid != current_pid
+            and _pid_is_running(existing_pid)
+        ):
             return False, None
         try:
             lock_path.write_text(str(current_pid), encoding="utf-8")
@@ -151,6 +165,7 @@ def _signal_existing_instance_restore_tray() -> bool:
 
 def test_connection(cfg: AgentConfig) -> bool:
     import httpx
+
     print(f"Test de connexion vers {cfg.api_base}...")
     try:
         client = PortalApiClient(cfg.api_base, cfg.agent_token)
@@ -167,9 +182,7 @@ def test_connection(cfg: AgentConfig) -> bool:
         if e.response.status_code == 401:
             print("  ERREUR 401 — connexion refusee par le portail :")
             print(f"     {detail or e}")
-            print(
-                "  Utilisez « Se connecter / Reconnecter » dans le menu de l'icone."
-            )
+            print("  Utilisez « Se connecter / Reconnecter » dans le menu de l'icone.")
         else:
             print(f"  ERREUR HTTP {e.response.status_code} : {detail or e}")
         return False
@@ -186,7 +199,8 @@ def _show_fatal_error_dialog(title: str, body: str) -> None:
     PowerShell/osascript/zenity pour garantir un retour visuel.
     """
     try:
-        from raguia_local_agent import tray_dialogs
+        import raguia_local_agent.tray_dialogs as tray_dialogs
+
         tray_dialogs.show_message(title, body, kind="error")
     except Exception:
         pass
@@ -198,6 +212,7 @@ def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
         print("Premier lancement — ouverture de l'assistant de configuration...")
         try:
             from raguia_local_agent.wizard import run_wizard
+
             result = run_wizard()
             if result is None:
                 print("Configuration annulee. Arret.")
@@ -224,12 +239,20 @@ def _run_wizard_if_needed(cfg_path: Path | None) -> AgentConfig:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent de synchronisation RAGUIA")
-    parser.add_argument("-c", "--config", default=None,
-                        help="Fichier YAML (defaut : ~/.raguia/config.yaml)")
-    parser.add_argument("--test", action="store_true",
-                        help="Teste la connexion et quitte")
-    parser.add_argument("--no-tray", action="store_true",
-                        help="Demarre sans icone systray (mode serveur)")
+    parser.add_argument(
+        "-c",
+        "--config",
+        default=None,
+        help="Fichier YAML (defaut : ~/.raguia/config.yaml)",
+    )
+    parser.add_argument(
+        "--test", action="store_true", help="Teste la connexion et quitte"
+    )
+    parser.add_argument(
+        "--no-tray",
+        action="store_true",
+        help="Demarre sans icone systray (mode serveur)",
+    )
     args = parser.parse_args()
 
     cfg_path = Path(args.config).expanduser() if args.config else None
@@ -244,7 +267,9 @@ def main() -> None:
     lock_ok, lock_path = _acquire_single_instance_lock()
     if not lock_ok:
         if _signal_existing_instance_restore_tray():
-            print("Agent deja en cours d'execution (demande de re-affichage de l'icone envoyee).")
+            print(
+                "Agent deja en cours d'execution (demande de re-affichage de l'icone envoyee)."
+            )
         else:
             print("Agent deja en cours d'execution (icone tray deja active).")
         sys.exit(0)
@@ -263,46 +288,80 @@ def main() -> None:
 
     try:
         if args.test:
-            if not cfg.agent_token:
-                print("Erreur : agent_token manquant")
+            if not cfg.agent_password and not cfg.agent_token:
+                print("Erreur : agent_password ou agent_token manquant")
                 sys.exit(1)
+            # Fetch token first if missing
+            from raguia_local_agent.api_client import portal_agent_login
+
+            if not cfg.agent_token and cfg.agent_password:
+                try:
+                    payload = portal_agent_login(
+                        cfg.api_base, cfg.client_slug, cfg.agent_password
+                    )
+                    cfg.agent_token = str(payload.get("agent_access_token") or "")
+                except Exception as e:
+                    print(f"Erreur d'authentification: {e}")
+                    sys.exit(1)
             sys.exit(0 if test_connection(cfg) else 1)
 
-        if not cfg.agent_token and not args.test:
+        if not cfg.agent_password and not args.test:
             # Le trousseau OS peut etre temporairement indisponible immediatement
             # apres un redemarrage (Windows Credential Locker, GNOME Keyring,
             # etc.). On retente plusieurs fois avec un court delai avant de
             # passer en mode degrade.
             from raguia_local_agent.secret_store import KEYRING_SENTINEL, load_token
+
             try:
                 import yaml as _yaml
-                _raw = _yaml.safe_load(cfg.cfg_path.read_text(encoding="utf-8")) if (cfg.cfg_path and cfg.cfg_path.is_file()) else {}
-                _stored = str((_raw or {}).get("agent_token") or "").strip()
+
+                _raw = (
+                    _yaml.safe_load(cfg.cfg_path.read_text(encoding="utf-8"))
+                    if (cfg.cfg_path and cfg.cfg_path.is_file())
+                    else {}
+                )
+                _stored = str((_raw or {}).get("agent_password") or "").strip()
                 if _stored == KEYRING_SENTINEL:
                     for _attempt in range(4):
                         time.sleep(1.5)
-                        _tok = load_token(cfg.cfg_path, KEYRING_SENTINEL)
-                        if _tok:
-                            cfg.agent_token = _tok
-                            logging.info("Token keyring recupere apres %d tentative(s).", _attempt + 1)
+                        _pwd = load_token(cfg.cfg_path, KEYRING_SENTINEL)
+                        if _pwd:
+                            cfg.agent_password = _pwd
+                            logging.info(
+                                "Mot de passe keyring recupere apres %d tentative(s).",
+                                _attempt + 1,
+                            )
                             break
             except Exception as _e:
                 logging.warning("Retry keyring echoue: %s", _e)
 
-        if not cfg.agent_token and args.no_tray:
+        if not cfg.agent_password and not cfg.agent_token and args.no_tray:
             logging.error(
-                "Session agent non disponible. Reconnectez l'agent ou lancez sans --no-tray."
+                "Aucune session agent disponible. Fournissez agent_token, RAGUIA_AGENT_TOKEN, "
+                "agent_password ou lancez sans --no-tray pour vous reconnecter."
             )
             sys.exit(1)
 
+        # Perform auto-login using the password to get the token
+        _needs_reconnect = not cfg.agent_password and not cfg.agent_token
+        if cfg.agent_password and not cfg.agent_token:
+            from raguia_local_agent.api_client import portal_agent_login
+
+            try:
+                payload = portal_agent_login(
+                    cfg.api_base, cfg.client_slug, cfg.agent_password
+                )
+                cfg.agent_token = str(payload.get("agent_access_token") or "")
+            except Exception as e:
+                logging.error("Erreur de connexion auto : %s", e)
+                _needs_reconnect = True
+
         agent = SyncAgent(cfg)
 
-        # Si le token est absent (trousseau inaccessible meme apres retry), on demarre
+        # Si le mot de passe est absent (trousseau inaccessible meme apres retry), on demarre
         # quand meme le tray en mode degrade : l'icone rouge s'affiche et le dialogue
         # de reconnexion est ouvert automatiquement pour que l'utilisateur puisse
         # fournir ses identifiants sans avoir a relancer l'application manuellement.
-        _needs_reconnect = not cfg.agent_token
-
         try:
             # --- Mode sans tray (serveur / terminal) ---
             if args.no_tray:
@@ -313,11 +372,14 @@ def main() -> None:
                 return
 
             # --- Mode avec tray (macOS : tray dans main thread, agent en daemon) ---
-            t = threading.Thread(target=agent.run_forever, daemon=True, name="raguia-agent")
+            t = threading.Thread(
+                target=agent.run_forever, daemon=True, name="raguia-agent"
+            )
             t.start()
 
             try:
                 from raguia_local_agent.tray import RaguiaTray
+
                 tray = RaguiaTray(agent, on_quit=agent.stop)
                 if _needs_reconnect:
                     # Planifie l'ouverture automatique du dialogue de reconnexion
@@ -325,7 +387,8 @@ def main() -> None:
                     def _auto_reconnect() -> None:
                         time.sleep(1.5)
                         try:
-                            from raguia_local_agent import tray_dialogs
+                            import raguia_local_agent.tray_dialogs as tray_dialogs
+
                             tray_dialogs.show_message(
                                 "Reconnexion requise",
                                 "La session d'authentification n'a pas pu etre chargee.\n"
@@ -334,10 +397,13 @@ def main() -> None:
                             )
                         except Exception:
                             pass
+
                     threading.Thread(target=_auto_reconnect, daemon=True).start()
-                tray.run()          # bloque dans le thread principal (requis sur macOS)
+                tray.run()  # bloque dans le thread principal (requis sur macOS)
             except ImportError:
-                logging.info("pystray/Pillow non disponible — mode sans tray. Ctrl+C pour arreter.")
+                logging.info(
+                    "pystray/Pillow non disponible — mode sans tray. Ctrl+C pour arreter."
+                )
                 try:
                     t.join()
                 except KeyboardInterrupt:

@@ -530,6 +530,8 @@ class RaguiaTray:
 
                     # Etape 2 : session obtenue -> activation en memoire.
                     self._agent.update_agent_token(new_token)
+                    self._agent.cfg.agent_password = password
+                    self._agent.cfg.client_slug = slug
 
                     # Etape 3 : verification que le portail accepte cette session.
                     # On distingue les erreurs :
@@ -569,7 +571,7 @@ class RaguiaTray:
                     data.setdefault("watch_parent", self._agent.cfg.watch_parent)
                     data.setdefault("root_folder_name", self._agent.cfg.root_folder_name)
                     data["client_slug"] = slug
-                    data["agent_token"] = save_token(cfg_file, new_token)
+                    data["agent_password"] = save_token(cfg_file, password)
                     with open(cfg_file, "w", encoding="utf-8") as f:
                         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
                     try:

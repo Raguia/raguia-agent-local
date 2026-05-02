@@ -9,9 +9,9 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Optional
 
 import yaml
+
 from .api_client import PortalApiClient, portal_agent_login, validate_api_base
 from .config import DEFAULT_API_BASE
 from .secret_store import save_token
@@ -73,6 +73,7 @@ def _register_autostart() -> None:
         # Clé de registre HKCU Run — ne nécessite pas de droits admin
         try:
             import winreg
+
             key = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Run",
@@ -97,7 +98,10 @@ def _register_autostart() -> None:
             # Si ce n'est pas un .app, on lance l'exécutable directement.
             app_bundle = Path(exe).parent.parent.parent
             if app_bundle.suffix == ".app" and app_bundle.is_dir():
-                program_args = ["<string>/usr/bin/open</string>", f"<string>{app_bundle}</string>"]
+                program_args = [
+                    "<string>/usr/bin/open</string>",
+                    f"<string>{app_bundle}</string>",
+                ]
                 program_args_xml = "\n    ".join(program_args)
             else:
                 program_args_xml = f"<string>{exe}</string>"
@@ -167,7 +171,7 @@ class SetupWizard:
 
     def _center(self, w: int, h: int) -> None:
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth()  - w) // 2
+        x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -188,7 +192,11 @@ class SetupWizard:
         )
         style.map(
             "Raguia.TButton",
-            background=[("active", "#8a2729"), ("pressed", "#7f2224"), ("disabled", "#cbd5e1")],
+            background=[
+                ("active", "#8a2729"),
+                ("pressed", "#7f2224"),
+                ("disabled", "#cbd5e1"),
+            ],
             foreground=[("disabled", "#f8fafc")],
         )
         style.configure(
@@ -215,7 +223,7 @@ class SetupWizard:
                 img_h = max(1, int(self._logo_img_src.height()))
                 # Evite de rogner le logo dans l'entete (hauteur cible ~52 px).
                 factor = max(1, img_h // 52)
-                hdr_logo = self._logo_img_src.subsample(factor, factor)
+                hdr_logo = self._logo_img_src.subsample(factor)
                 tk.Label(hdr_inner, image=hdr_logo, bg=_BRAND_RED).pack(
                     side="left", pady=6, padx=(0, 10)
                 )
@@ -237,35 +245,59 @@ class SetupWizard:
 
         # -- Page 0 : API + Login --
         p0 = tk.Frame(self._container, bg=_BRAND_BG)
-        tk.Label(p0, text="Etape 1 / 3 — Connexion au portail",
-                 font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
-        tk.Label(p0, text="URL du portail Raguia :", bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w")
-        ttk.Entry(p0, textvariable=self.var_api, width=52, style="Raguia.TEntry").pack(fill="x", pady=(2, 10))
+        tk.Label(
+            p0,
+            text="Etape 1 / 3 — Connexion au portail",
+            font=("Helvetica", 11, "bold"),
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
+        ).pack(anchor="w", pady=(0, 12))
+        tk.Label(
+            p0, text="URL du portail Raguia :", bg=_BRAND_BG, fg=_BRAND_BLACK
+        ).pack(anchor="w")
+        ttk.Entry(p0, textvariable=self.var_api, width=52, style="Raguia.TEntry").pack(
+            fill="x", pady=(2, 10)
+        )
         tk.Label(
             p0,
             text="Slug client (ex: entreprise-demo) :",
             bg=_BRAND_BG,
             fg=_BRAND_BLACK,
         ).pack(anchor="w")
-        ttk.Entry(p0, textvariable=self.var_slug, width=52, style="Raguia.TEntry").pack(fill="x", pady=(2, 10))
+        ttk.Entry(p0, textvariable=self.var_slug, width=52, style="Raguia.TEntry").pack(
+            fill="x", pady=(2, 10)
+        )
         tk.Label(
             p0,
             text="Mot de passe portail client :",
             bg=_BRAND_BG,
             fg=_BRAND_BLACK,
         ).pack(anchor="w")
-        ttk.Entry(p0, textvariable=self.var_password, width=52, show="*", style="Raguia.TEntry").pack(fill="x", pady=(2, 0))
+        ttk.Entry(
+            p0,
+            textvariable=self.var_password,
+            width=52,
+            show="*",
+            style="Raguia.TEntry",
+        ).pack(fill="x", pady=(2, 0))
         tk.Label(
             p0,
             text="Le mot de passe ne sera jamais stocke. Seule la session de connexion est conservee de facon securisee.",
-            fg=_BRAND_MUTED, bg=_BRAND_BG, font=("Helvetica", 9),
+            fg=_BRAND_MUTED,
+            bg=_BRAND_BG,
+            font=("Helvetica", 9),
         ).pack(anchor="w", pady=(4, 0))
         self._frames.append(p0)
 
         # -- Page 1 : Dossier --
         p1 = tk.Frame(self._container, bg=_BRAND_BG)
-        tk.Label(p1, text="Etape 2 / 3 — Dossier de synchronisation",
-                 font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
+        tk.Label(
+            p1,
+            text="Etape 2 / 3 — Dossier de synchronisation",
+            font=("Helvetica", 11, "bold"),
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
+        ).pack(anchor="w", pady=(0, 12))
         tk.Label(
             p1,
             text="Choisissez le dossier PARENT.\nL'agent creera automatiquement un dossier 'RAGUIA' a l'interieur.",
@@ -275,28 +307,57 @@ class SetupWizard:
         ).pack(anchor="w")
         row = tk.Frame(p1, bg=_BRAND_BG)
         row.pack(fill="x", pady=(10, 0))
-        ttk.Entry(row, textvariable=self.var_dir, width=40, style="Raguia.TEntry").pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Parcourir…", command=self._browse, style="Raguia.TButton").pack(side="left", padx=(6, 0))
+        ttk.Entry(row, textvariable=self.var_dir, width=40, style="Raguia.TEntry").pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(
+            row, text="Parcourir…", command=self._browse, style="Raguia.TButton"
+        ).pack(side="left", padx=(6, 0))
         self._frames.append(p1)
 
         # -- Page 2 : Test --
         p2 = tk.Frame(self._container, bg=_BRAND_BG)
-        tk.Label(p2, text="Etape 3 / 3 — Test de connexion",
-                 font=("Helvetica", 11, "bold"), bg=_BRAND_BG, fg=_BRAND_BLACK).pack(anchor="w", pady=(0, 12))
-        self._test_label = tk.Label(p2, text="Appuyez sur 'Tester' pour verifier la connexion.",
-                                    justify="left", wraplength=440, bg=_BRAND_BG, fg=_BRAND_BLACK)
+        tk.Label(
+            p2,
+            text="Etape 3 / 3 — Test de connexion",
+            font=("Helvetica", 11, "bold"),
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
+        ).pack(anchor="w", pady=(0, 12))
+        self._test_label = tk.Label(
+            p2,
+            text="Appuyez sur 'Tester' pour verifier la connexion.",
+            justify="left",
+            wraplength=440,
+            bg=_BRAND_BG,
+            fg=_BRAND_BLACK,
+        )
         self._test_label.pack(anchor="w")
-        ttk.Button(p2, text="Tester la connexion", command=self._run_test, style="Raguia.TButton").pack(anchor="w", pady=10)
+        ttk.Button(
+            p2,
+            text="Tester la connexion",
+            command=self._run_test,
+            style="Raguia.TButton",
+        ).pack(anchor="w", pady=10)
         self._frames.append(p2)
 
         # Barre de navigation
         nav = tk.Frame(self.root, pady=10, padx=24, bg=_BRAND_LIGHT_RED)
         nav.pack(fill="x", side="bottom")
-        self._btn_back = ttk.Button(nav, text="← Retour", command=self._prev, style="Raguia.TButton")
+        self._btn_back = ttk.Button(
+            nav, text="← Retour", command=self._prev, style="Raguia.TButton"
+        )
         self._btn_back.pack(side="left")
-        self._btn_next = ttk.Button(nav, text="Suivant →", command=self._next, style="Raguia.TButton")
+        self._btn_next = ttk.Button(
+            nav, text="Suivant →", command=self._next, style="Raguia.TButton"
+        )
         self._btn_next.pack(side="right")
-        self._btn_save = ttk.Button(nav, text="Enregistrer & Demarrer", command=self._save, style="Raguia.TButton")
+        self._btn_save = ttk.Button(
+            nav,
+            text="Enregistrer & Demarrer",
+            command=self._save,
+            style="Raguia.TButton",
+        )
         # Affiché seulement page 2
 
     def _show_step(self, step: int) -> None:
@@ -321,7 +382,9 @@ class SetupWizard:
                 messagebox.showwarning("Slug manquant", "Entrez le slug client.")
                 return
             if not self.var_password.get().strip():
-                messagebox.showwarning("Mot de passe manquant", "Entrez le mot de passe portail.")
+                messagebox.showwarning(
+                    "Mot de passe manquant", "Entrez le mot de passe portail."
+                )
                 return
             try:
                 validate_api_base(self.var_api.get())
@@ -354,7 +417,11 @@ class SetupWizard:
             login_payload = portal_agent_login(api_base, slug, password)
             token = str(login_payload.get("agent_access_token") or "").strip()
             if not token:
-                return False, "Connexion impossible : reponse login sans token agent.", ""
+                return (
+                    False,
+                    "Connexion impossible : reponse login sans token agent.",
+                    "",
+                )
 
             client = PortalApiClient(api_base, token)
             try:
@@ -394,8 +461,9 @@ class SetupWizard:
         data = {
             "api_base": api_base,
             "client_slug": self.var_slug.get().strip().lower(),
-            "agent_token": save_token(config_path, token),
+            "agent_password": save_token(config_path, self.var_password.get().strip()),
             "watch_parent": self.var_dir.get(),
+            "root_folder_name": "RAGUIA",
         }
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, allow_unicode=True, default_flow_style=False)

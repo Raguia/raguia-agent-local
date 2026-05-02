@@ -31,7 +31,7 @@ def test_load_config_does_not_raise_when_keyring_returns_empty(monkeypatch, tmp_
         yaml.safe_dump(
             {
                 "api_base": "https://example.com",
-                "agent_token": secret_store.KEYRING_SENTINEL,
+                "agent_password": secret_store.KEYRING_SENTINEL,
                 "client_slug": "demo",
                 "watch_parent": str(tmp_path),
             }
@@ -42,7 +42,7 @@ def test_load_config_does_not_raise_when_keyring_returns_empty(monkeypatch, tmp_
     with caplog.at_level(logging.WARNING):
         cfg = config.load_config(cfg_path)
 
-    assert cfg.agent_token == "", "Token doit être vide pour permettre le démarrage en mode dégradé"
+    assert cfg.agent_password == "", "Token doit être vide pour permettre le démarrage en mode dégradé"
     assert any("Trousseau" in rec.message or "trousseau" in rec.message for rec in caplog.records)
 
 
@@ -62,7 +62,7 @@ def test_load_config_succeeds_when_keyring_returns_token(monkeypatch, tmp_path: 
         yaml.safe_dump(
             {
                 "api_base": "https://example.com",
-                "agent_token": secret_store.KEYRING_SENTINEL,
+                "agent_password": secret_store.KEYRING_SENTINEL,
                 "client_slug": "demo",
                 "watch_parent": str(tmp_path),
             }
@@ -71,4 +71,4 @@ def test_load_config_succeeds_when_keyring_returns_token(monkeypatch, tmp_path: 
     )
 
     cfg = config.load_config(cfg_path)
-    assert cfg.agent_token == "real-token"
+    assert cfg.agent_password == "real-token"

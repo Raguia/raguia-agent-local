@@ -293,6 +293,59 @@ else
 fi
 
 echo -e "\n${GREEN}5. Scripts de contrôle...${NC}"
+cat << 'EOF' > "$AGENT_DIR/start.sh"
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RAGUIA_AGENT_REPO="$(cd .. && pwd)"
+export RAGUIA_AGENT_CONFIG="$(pwd)/raguia_agent.yaml"
+if [ ! -f "$RAGUIA_AGENT_CONFIG" ]; then
+  echo "Erreur: configuration introuvable ($RAGUIA_AGENT_CONFIG). Lancez install.sh."
+  exit 1
+fi
+VENV_PY="venv/bin/python"
+if [ ! -x "$VENV_PY" ] && [ -x "venv/bin/python3" ]; then
+  VENV_PY="venv/bin/python3"
+fi
+if [ ! -x "$VENV_PY" ]; then
+  echo "Erreur: interprete venv introuvable. Relancez install.sh."
+  exit 1
+fi
+exec "$VENV_PY" -m raguia_local_agent "$@"
+EOF
+
+cat << 'EOF' > "$AGENT_DIR/test.sh"
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RAGUIA_AGENT_REPO="$(cd .. && pwd)"
+export RAGUIA_AGENT_CONFIG="$(pwd)/raguia_agent.yaml"
+if [ ! -f "$RAGUIA_AGENT_CONFIG" ]; then
+  echo "Erreur: configuration introuvable ($RAGUIA_AGENT_CONFIG). Lancez install.sh."
+  exit 1
+fi
+VENV_PY="venv/bin/python"
+if [ ! -x "$VENV_PY" ] && [ -x "venv/bin/python3" ]; then
+  VENV_PY="venv/bin/python3"
+fi
+if [ ! -x "$VENV_PY" ]; then
+  echo "Erreur: interprete venv introuvable. Relancez install.sh."
+  exit 1
+fi
+exec "$VENV_PY" -m raguia_local_agent --test "$@"
+EOF
+
+cat << 'EOF' > "$AGENT_DIR/stop.sh"
+#!/bin/bash
+PID_FILE="$HOME/.raguia/agent.pid"
+if [ -f "$PID_FILE" ]; then
+    kill $(cat "$PID_FILE") 2>/dev/null || true
+    rm -f "$PID_FILE"
+else
+    pkill -f "python -m raguia_local_agent" 2>/dev/null || true
+fi
+EOF
+
 chmod +x "$SCRIPT_DIR/update.sh" 2>/dev/null || true
 chmod +x "$AGENT_DIR/start.sh" "$AGENT_DIR/test.sh" "$AGENT_DIR/stop.sh" 2>/dev/null || true
 

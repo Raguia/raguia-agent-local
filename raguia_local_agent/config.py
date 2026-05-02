@@ -9,14 +9,15 @@ Ordre de priorite :
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
 from .secret_store import KEYRING_SENTINEL, keyring_available, load_token, save_token
 
 log = logging.getLogger(__name__)
@@ -44,7 +45,8 @@ def _detect_documents_folder() -> str:
 class AgentConfig:
     api_base: str = DEFAULT_API_BASE
     client_slug: str = ""
-    agent_token: str = ""
+    agent_password: str = ""
+    agent_token: str = ""  # In memory only
     watch_parent: str = ""
     root_folder_name: str = DEFAULT_ROOT_NAME
     poll_interval_seconds: float = 30.0
@@ -61,27 +63,57 @@ class AgentConfig:
     structured_logging: bool = True
     # Extensions supportees (normalisees en minuscules au chargement)
     supported_extensions: tuple[str, ...] = (
-        ".pdf", ".txt", ".md", ".docx", ".doc",
-        ".xlsx", ".xls", ".csv", ".html", ".htm",
-        ".pptx", ".png", ".jpg", ".jpeg", ".webp",
+        ".pdf",
+        ".txt",
+        ".md",
+        ".docx",
+        ".doc",
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".html",
+        ".htm",
+        ".pptx",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
     )
     extra: dict[str, Any] = field(default_factory=dict)
     cfg_path: Path | None = None
 
-    def save_token(self, token: str) -> None:
-        """Enregistre la nouvelle session dans le fichier de config et en memoire."""
-        self.agent_token = token
+    def _write_config_value(self, key: str, value: str) -> None:
         if not self.cfg_path or not self.cfg_path.is_file():
             return
         try:
             with open(self.cfg_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-            data["agent_token"] = save_token(self.cfg_path, token)
+            data[key] = value
             with open(self.cfg_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
+            try:
+                os.chmod(self.cfg_path, 0o600)
+            except Exception:
+                pass
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Impossible de sauvegarder le nouveau token dans %s : %s", self.cfg_path, e)
+            log.error(
+                "Impossible de sauvegarder %s dans %s : %s",
+                key,
+                self.cfg_path,
+                e,
+            )
+
+    def save_password(self, password: str) -> None:
+        """Enregistre le mot de passe dans le fichier de config et en memoire."""
+        self.agent_password = password
+        self._write_config_value("agent_password", save_token(self.cfg_path, password))
+
+    def save_agent_token(self, token: str) -> None:
+        """Met a jour le token de session legacy sans toucher au mot de passe keyring."""
+        self.agent_token = (token or "").strip()
+        if not self.agent_token:
+            return
+        self._write_config_value("agent_token", self.agent_token)
 
     @property
     def root_path(self) -> Path:
@@ -102,7 +134,7 @@ class AgentConfig:
 
     def find_relocated_root(self) -> Path | None:
         """Cherche si le dossier RAGUIA a ete deplace sous le meme parent.
-        
+
         Retourne le nouveau chemin ou None.
         """
         parent = Path(self.watch_parent).expanduser().resolve()
@@ -140,7 +172,7 @@ def load_config(path: Path | None = None) -> AgentConfig:
         for k, v in raw.items():
             if k == "extra":
                 continue
-            if k == "agent_token":
+            if k == "agent_password":
                 v = load_token(path, str(v or ""))
             if k == "supported_extensions":
                 # Normalise en tuple de str minuscules
@@ -161,6 +193,12 @@ def load_config(path: Path | None = None) -> AgentConfig:
             "Session agent chargee depuis la variable RAGUIA_AGENT_TOKEN "
             "(prioritaire sur la configuration fichier)."
         )
+    if os.environ.get("RAGUIA_AGENT_PASSWORD"):
+        cfg.agent_password = os.environ["RAGUIA_AGENT_PASSWORD"].strip()
+        log.info(
+            "Mot de passe agent charge depuis la variable RAGUIA_AGENT_PASSWORD "
+            "(non persiste dans la configuration fichier)."
+        )
     if os.environ.get("RAGUIA_WATCH_PARENT"):
         cfg.watch_parent = os.environ["RAGUIA_WATCH_PARENT"]
     if os.environ.get("RAGUIA_DRY_RUN", "").lower() in ("1", "true", "yes"):
@@ -172,36 +210,24 @@ def load_config(path: Path | None = None) -> AgentConfig:
         cfg.watch_parent = _detect_documents_folder()
 
     cfg.cfg_path = path
-    _migrate_plaintext_token_to_keyring(path, raw_data)
-    _enforce_secure_token_storage(cfg, path, raw_data)
-    _validate_resolved_agent_token(cfg, raw_data)
+    _migrate_plaintext_password_to_keyring(path, raw_data)
+    _enforce_secure_password_storage(cfg, path, raw_data)
+    _validate_resolved_agent_password(cfg, raw_data)
 
     return cfg
 
 
-def _validate_resolved_agent_token(
+def _validate_resolved_agent_password(
     cfg: AgentConfig, raw_data: dict[str, Any] | None
 ) -> None:
-    """Diagnostique un trousseau temporairement indisponible (ne bloque PAS le démarrage).
-
-    Auparavant cette fonction levait une ``ValueError`` quand le YAML référence
-    le trousseau (``__RAGUIA_KEYRING__``) mais que la lecture est vide.
-    Problème sur Windows : juste après un redémarrage, le service Credential
-    Locker n'est pas encore prêt, le retry programmé dans ``__main__.py``
-    n'était jamais atteint car ``load_config()`` plantait avant.
-
-    Comportement actuel : on log seulement. L'agent démarre en mode dégradé,
-    affiche l'icône rouge et propose la reconnexion. Le token sera relu
-    automatiquement lors du retry keyring (voir ``__main__.py``).
-    """
-    if os.environ.get("RAGUIA_AGENT_TOKEN"):
+    if os.environ.get("RAGUIA_AGENT_PASSWORD"):
         return
     if not raw_data:
         return
-    file_marker = str(raw_data.get("agent_token") or "").strip()
+    file_marker = str(raw_data.get("agent_password") or "").strip()
     if file_marker != KEYRING_SENTINEL:
         return
-    if (cfg.agent_token or "").strip():
+    if (cfg.agent_password or "").strip():
         return
     log.warning(
         "Trousseau OS temporairement indisponible (session vide). "
@@ -210,25 +236,22 @@ def _validate_resolved_agent_token(
     )
 
 
-def _migrate_plaintext_token_to_keyring(path: Path | None, raw_data: dict[str, Any] | None) -> None:
-    """Migration transparente : session stockee en clair -> trousseau OS + sentinel.
-
-    Si keyring n'est pas disponible, la fonction ne fait rien.
-    """
+def _migrate_plaintext_password_to_keyring(
+    path: Path | None, raw_data: dict[str, Any] | None
+) -> None:
     if not path or not path.is_file() or not raw_data:
         return
-    raw_token = str(raw_data.get("agent_token") or "").strip()
-    if not raw_token:
+    raw_password = str(raw_data.get("agent_password") or "").strip()
+    if not raw_password or raw_password == KEYRING_SENTINEL:
         return
-    stored_value = save_token(path, raw_token)
-    if stored_value == raw_token:
-        # Keyring indisponible: on conserve l'etat actuel
+    stored_value = save_token(path, raw_password)
+    if stored_value == raw_password:
         return
-    if raw_token == stored_value:
+    if raw_password == stored_value:
         return
     try:
         updated = dict(raw_data)
-        updated["agent_token"] = stored_value
+        updated["agent_password"] = stored_value
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(updated, f, default_flow_style=False, allow_unicode=True)
         try:
@@ -236,25 +259,28 @@ def _migrate_plaintext_token_to_keyring(path: Path | None, raw_data: dict[str, A
         except Exception:
             pass
     except Exception as e:
-        log.warning("Migration token vers keyring impossible pour %s: %s", path, e)
+        log.warning(
+            "Migration mot de passe vers keyring impossible pour %s: %s", path, e
+        )
 
 
-def _enforce_secure_token_storage(
+def _enforce_secure_password_storage(
     cfg: AgentConfig, path: Path | None, raw_data: dict[str, Any] | None
 ) -> None:
-    """Refuse le fallback YAML uniquement si keyring est disponible."""
     if not cfg.secure_token_storage:
         return
     if not keyring_available():
-        log.warning("secure_token_storage actif mais keyring indisponible: mode compatibilite conserve.")
+        log.warning(
+            "secure_token_storage actif mais keyring indisponible: mode compatibilite conserve."
+        )
         return
     stored = ""
     if raw_data:
-        stored = str(raw_data.get("agent_token") or "").strip()
+        stored = str(raw_data.get("agent_password") or "").strip()
     if not stored and path and path.is_file():
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            stored = str(raw.get("agent_token") or "").strip()
+            stored = str(raw.get("agent_password") or "").strip()
         except Exception:
             stored = ""
     if stored and stored != KEYRING_SENTINEL:

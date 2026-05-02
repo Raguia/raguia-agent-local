@@ -25,7 +25,7 @@ def test_load_config_migrates_plaintext_token_to_keyring(monkeypatch, tmp_path: 
         yaml.dump(
             {
                 "api_base": "https://example.com",
-                "agent_token": "plain-token",
+                "agent_password": "plain-token",
                 "watch_parent": str(tmp_path),
             }
         ),
@@ -33,8 +33,8 @@ def test_load_config_migrates_plaintext_token_to_keyring(monkeypatch, tmp_path: 
     )
 
     cfg = config.load_config(cfg_path)
-    assert cfg.agent_token == "plain-token"
+    assert cfg.agent_password == "plain-token"
 
     rewritten = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert rewritten["agent_token"] == secret_store.KEYRING_SENTINEL
+    assert rewritten["agent_password"] == secret_store.KEYRING_SENTINEL
 

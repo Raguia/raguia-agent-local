@@ -85,6 +85,7 @@ class SyncAgent:
         if self.on_status_change:
             try:
                 from .tray import TrayStatus
+
                 self.on_status_change(TrayStatus(status), message)
             except Exception:
                 pass
@@ -113,9 +114,7 @@ class SyncAgent:
         # Demande explicite (portail ou menu) : ne pas attendre stability_seconds sinon le 1er
         # poll envoyait sync-complete « vide » et effaçait la demande sans upload (bug).
         min_age = (
-            0.0
-            if reason in ("force", "server_request")
-            else self.cfg.stability_seconds
+            0.0 if reason in ("force", "server_request") else self.cfg.stability_seconds
         )
         attempt_cap = (
             _FORCE_POP_ATTEMPT_CAP
@@ -337,7 +336,8 @@ class SyncAgent:
                 log.warning(
                     "Dossier introuvable a '%s'. Trouve ici : %s. "
                     "Mettez a jour watch_parent dans votre config.",
-                    self.root, relocated,
+                    self.root,
+                    relocated,
                 )
                 self._emit("warning", f"Dossier deplace ? Trouve : {relocated}")
             else:
@@ -374,20 +374,39 @@ class SyncAgent:
                     he = e if isinstance(e, httpx.HTTPStatusError) else None
                     detail = http_response_detail(he.response) if he else ""
                     if he and he.response.status_code == 401:
-                        auth_failure_401 = True
-                        now_t = time.time()
-                        if now_t - self._last_401_log_ts >= 120:
-                            self._last_401_log_ts = now_t
-                            log.error(
-                                "Connexion refusee par le portail (401) : %s\n"
-                                "  → Reconnectez-vous via le menu icone « Se connecter / Reconnecter ».\n"
-                                "  → Dev local : verifiez api_base et les identifiants.",
-                                detail or e,
+                        relogin_ok = False
+                        if self.cfg.agent_password:
+                            from .api_client import portal_agent_login
+
+                            try:
+                                payload = portal_agent_login(
+                                    self.cfg.api_base,
+                                    self.cfg.client_slug,
+                                    self.cfg.agent_password,
+                                )
+                                new_token = str(payload.get("agent_access_token") or "")
+                                self.update_agent_token(new_token)
+                                log.info("Reconnexion auto reussie apres 401.")
+                                st = self.client.sync_status()
+                                relogin_ok = True
+                            except Exception as re_e:
+                                log.warning("Reconnexion auto echouee : %s", re_e)
+
+                        if not relogin_ok:
+                            auth_failure_401 = True
+                            now_t = time.time()
+                            if now_t - self._last_401_log_ts >= 120:
+                                self._last_401_log_ts = now_t
+                                log.error(
+                                    "Connexion refusee par le portail (401) : %s\n"
+                                    "  → Reconnectez-vous via le menu icone « Se connecter / Reconnecter ».\n"
+                                    "  → Dev local : verifiez api_base et les identifiants.",
+                                    detail or e,
+                                )
+                            self._emit(
+                                "error",
+                                "Session invalide (401) — reconnectez-vous via l'icone",
                             )
-                        self._emit(
-                            "error",
-                            "Session invalide (401) — reconnectez-vous via l'icone",
-                        )
                     elif he:
                         log.warning(
                             "sync-status HTTP %s : %s",
@@ -403,10 +422,12 @@ class SyncAgent:
                     self._apply_remote_deletions(st)
 
                 # --- Evaluer si on doit syncer ---
-                pending   = self.queue.pending_count()
+                pending = self.queue.pending_count()
                 pending_delete = self.queue.pending_delete_count()
-                stuck     = self.queue.stuck_count()
-                cooldown_ok = (time.time() - last_cooldown_ts) >= self.cfg.sync_cooldown_seconds
+                stuck = self.queue.stuck_count()
+                cooldown_ok = (
+                    time.time() - last_cooldown_ts
+                ) >= self.cfg.sync_cooldown_seconds
                 burst = pending >= self.cfg.burst_threshold
                 force = self._syncing.is_set()
                 self._syncing.clear()
@@ -424,7 +445,10 @@ class SyncAgent:
                     reason = "local_burst"
 
                 if stuck > 0:
-                    log.warning("%d fichier(s) bloques (trop d'echecs). Clic droit -> Reinitialiser.", stuck)
+                    log.warning(
+                        "%d fichier(s) bloques (trop d'echecs). Clic droit -> Reinitialiser.",
+                        stuck,
+                    )
                     self._emit("warning", f"{stuck} fichier(s) bloques")
 
                 # Sans sync-status : pas de quota serveur (on laisse run_cycle sans plafond distant)
@@ -444,7 +468,7 @@ class SyncAgent:
                 if reason and not skip_due_auth:
                     last_cooldown_ts = time.time()
                     m = self.run_cycle(reason, limit_bytes=limit_b)
-                    err_str = ("; ".join(m["errors"])[:2000] if m.get("errors") else None)
+                    err_str = "; ".join(m["errors"])[:2000] if m.get("errors") else None
                     errs = m.get("errors") or []
                     idle_cycle = (
                         (m.get("uploaded") or 0) == 0
@@ -518,23 +542,28 @@ class SyncAgent:
     # ------------------------------------------------------------------
     def _check_token_expiry(self) -> None:
         """Verifie l'expiration de la session et tente un renouvellement silencieux."""
-        import base64, json as _json, time as _time
+        import base64
+        import json as _json
+        import time as _time
+
         try:
             parts = self.cfg.agent_token.split(".")
             if len(parts) != 3:
                 return
-            
+
             payload_b64 = parts[1]
             payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
             payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
-            
+
             exp = payload.get("exp")
             if not exp:
                 return
             days = (exp - _time.time()) / 86400
             if days <= 7:
                 if days <= 0:
-                    log.warning("Session expiree. Tentative de renouvellement silencieux...")
+                    log.warning(
+                        "Session expiree. Tentative de renouvellement silencieux..."
+                    )
                 else:
                     log.info(
                         "Session expiree dans %.1f jours. Tentative de renouvellement automatique...",
@@ -544,19 +573,24 @@ class SyncAgent:
                     res = self.client.refresh_token()
                     new_token = res.get("access_token")
                     if new_token:
-                        self.cfg.save_token(new_token)
+                        self.cfg.save_agent_token(new_token)
                         self.client.set_agent_token(new_token)
                         log.info("Token renouvele avec succes !")
                         self._emit("idle")
                 except Exception as e:
                     if days <= 0:
-                        log.error("Echec du renouvellement silencieux (session deja expiree) : %s", e)
+                        log.error(
+                            "Echec du renouvellement silencieux (session deja expiree) : %s",
+                            e,
+                        )
                         self._emit(
                             "error",
                             "Session expiree — reconnectez-vous via l'icone",
                         )
                     else:
-                        log.error("Echec du renouvellement automatique de la session : %s", e)
+                        log.error(
+                            "Echec du renouvellement automatique de la session : %s", e
+                        )
                         self._emit(
                             "warning",
                             f"Session expire dans {days:.0f} j (echec renouvellement)",

@@ -82,6 +82,8 @@ def save_token(config_path: Path | None, token: str) -> str:
     token = (token or "").strip()
     if not token:
         return ""
+    if token == KEYRING_SENTINEL:
+        return KEYRING_SENTINEL
     keyring = _get_keyring_module()
     if keyring is None:
         return token
@@ -113,7 +115,9 @@ def load_token(config_path: Path | None, stored_value: str) -> str:
             tested.append(ident)
             value = keyring.get_password(KEYRING_SERVICE, ident) or ""
             if value.strip():
-                log.debug("Session chargee depuis le trousseau via identifiant '%s'.", ident)
+                log.debug(
+                    "Session chargee depuis le trousseau via identifiant '%s'.", ident
+                )
                 return value
         if tested:
             log.warning(
@@ -124,4 +128,3 @@ def load_token(config_path: Path | None, stored_value: str) -> str:
     except Exception as e:
         log.warning("Impossible de lire le token depuis keyring: %s", e)
         return ""
-
