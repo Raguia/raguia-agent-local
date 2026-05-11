@@ -376,15 +376,14 @@ class SyncAgent:
                     if he and he.response.status_code == 401:
                         relogin_ok = False
                         if self.cfg.agent_password:
-                            from .api_client import portal_agent_login
+                            from .api_client import auto_login
 
                             try:
-                                payload = portal_agent_login(
+                                new_token = auto_login(
                                     self.cfg.api_base,
                                     self.cfg.client_slug,
                                     self.cfg.agent_password,
                                 )
-                                new_token = str(payload.get("agent_access_token") or "")
                                 self.update_agent_token(new_token)
                                 log.info("Reconnexion auto reussie apres 401.")
                                 st = self.client.sync_status()

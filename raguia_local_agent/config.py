@@ -239,6 +239,11 @@ def _validate_resolved_agent_password(
 def _migrate_plaintext_password_to_keyring(
     path: Path | None, raw_data: dict[str, Any] | None
 ) -> None:
+    """Migre le mot de passe en clair vers le trousseau OS si disponible.
+
+    Si keyring est indisponible, conserve le mot de passe en clair dans le YAML
+    (le fichier est en 0o600) — pas de blocage utilisateur.
+    """
     if not path or not path.is_file() or not raw_data:
         return
     raw_password = str(raw_data.get("agent_password") or "").strip()
@@ -246,6 +251,8 @@ def _migrate_plaintext_password_to_keyring(
         return
     stored_value = save_token(path, raw_password)
     if stored_value == raw_password:
+        # keyring indisponible : on garde le mot de passe en clair
+        log.info("Trousseau OS indisponible — mot de passe conservé en clair dans %s", path)
         return
     if raw_password == stored_value:
         return
@@ -258,6 +265,7 @@ def _migrate_plaintext_password_to_keyring(
             os.chmod(path, 0o600)
         except Exception:
             pass
+        log.info("Mot de passe migré vers le trousseau OS")
     except Exception as e:
         log.warning(
             "Migration mot de passe vers keyring impossible pour %s: %s", path, e

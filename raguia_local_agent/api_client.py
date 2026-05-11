@@ -196,6 +196,20 @@ def portal_agent_login(api_base: str, slug: str, password: str) -> dict[str, Any
         return payload
 
 
+def auto_login(api_base: str, client_slug: str, agent_password: str) -> str:
+    """Tente la connexion agent et retourne le token. Lève ValueError si échec.
+
+    Fonction utilitaire partagée entre le wizard, le démarrage CLI et le tray.
+    """
+    if not agent_password:
+        raise ValueError("Mot de passe portail manquant")
+    payload = portal_agent_login(api_base, client_slug, agent_password)
+    token = str(payload.get("agent_access_token") or "").strip()
+    if not token:
+        raise ValueError("Réponse login sans token agent")
+    return token
+
+
 class PortalApiClient:
     def __init__(self, api_base: str, agent_token: str):
         self.api_base = validate_api_base(api_base)

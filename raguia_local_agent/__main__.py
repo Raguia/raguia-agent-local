@@ -292,14 +292,12 @@ def main() -> None:
                 print("Erreur : agent_password ou agent_token manquant")
                 sys.exit(1)
             # Fetch token first if missing
-            from raguia_local_agent.api_client import portal_agent_login
-
             if not cfg.agent_token and cfg.agent_password:
                 try:
-                    payload = portal_agent_login(
+                    from raguia_local_agent.api_client import auto_login
+                    cfg.agent_token = auto_login(
                         cfg.api_base, cfg.client_slug, cfg.agent_password
                     )
-                    cfg.agent_token = str(payload.get("agent_access_token") or "")
                 except Exception as e:
                     print(f"Erreur d'authentification: {e}")
                     sys.exit(1)
@@ -323,7 +321,7 @@ def main() -> None:
                 _stored = str((_raw or {}).get("agent_password") or "").strip()
                 if _stored == KEYRING_SENTINEL:
                     for _attempt in range(4):
-                        time.sleep(1.5)
+                        time.sleep(0.5)
                         _pwd = load_token(cfg.cfg_path, KEYRING_SENTINEL)
                         if _pwd:
                             cfg.agent_password = _pwd
@@ -337,21 +335,20 @@ def main() -> None:
 
         if not cfg.agent_password and not cfg.agent_token and args.no_tray:
             logging.error(
-                "Aucune session agent disponible. Fournissez agent_token, RAGUIA_AGENT_TOKEN, "
-                "agent_password ou lancez sans --no-tray pour vous reconnecter."
+                "Aucune session agent disponible. "
+                "Définissez RAGUIA_AGENT_PASSWORD dans l'environnement, "
+                "fournissez agent_token, ou lancez sans --no-tray pour vous reconnecter."
             )
             sys.exit(1)
 
         # Perform auto-login using the password to get the token
         _needs_reconnect = not cfg.agent_password and not cfg.agent_token
         if cfg.agent_password and not cfg.agent_token:
-            from raguia_local_agent.api_client import portal_agent_login
-
             try:
-                payload = portal_agent_login(
+                from raguia_local_agent.api_client import auto_login
+                cfg.agent_token = auto_login(
                     cfg.api_base, cfg.client_slug, cfg.agent_password
                 )
-                cfg.agent_token = str(payload.get("agent_access_token") or "")
             except Exception as e:
                 logging.error("Erreur de connexion auto : %s", e)
                 _needs_reconnect = True
