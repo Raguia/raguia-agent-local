@@ -67,13 +67,30 @@ class SyncAgent:
         self._pending_hint_ts: float = 0.0
         self._last_401_log_ts: float = 0.0
         self._last_auth_skip_log_ts: float = 0.0
+        self._wal_ops_since_checkpoint: int = 0
 
     def _get_local_folder_size(self) -> int:
+        """Calcule la taille du dossier via os.scandir récursif (perf optimale)."""
         total = 0
         try:
-            for p in self.root.rglob("*"):
-                if p.is_file() and not _should_ignore(p):
-                    total += p.stat().st_size
+            def _scan_dir(path: Path) -> None:
+                nonlocal total
+                try:
+                    with os.scandir(path) as entries:
+                        for entry in entries:
+                            if entry.is_dir(follow_symlinks=False):
+                                _scan_dir(Path(entry.path))
+                            elif entry.is_file():
+                                name = entry.name
+                                if name.startswith(".") or name.startswith("~$") or name.endswith(".tmp"):
+                                    continue
+                                try:
+                                    total += entry.stat().st_size
+                                except OSError:
+                                    pass
+                except PermissionError:
+                    pass
+            _scan_dir(self.root)
         except Exception as e:
             log.warning("Erreur calcul taille dossier: %s", e)
         return total
@@ -406,6 +423,24 @@ class SyncAgent:
                                 "error",
                                 "Session invalide (401) — reconnectez-vous via l'icone",
                             )
+                    elif he and he.response.status_code == 403:
+                        detail_lower = (detail or "").lower()
+                        if "local_agent_enabled" in detail_lower or "agent" in detail_lower:
+                            log.error(
+                                "Agent local désactivé par l'administrateur (403). Arrêt."
+                            )
+                            self._emit(
+                                "error",
+                                "Agent local désactivé — contactez votre administrateur",
+                            )
+                            self._stop.set()
+                            return
+                        else:
+                            log.warning(
+                                "Accès refusé (403) : %s",
+                                detail or e,
+                            )
+                            self._emit("warning", "Accès refusé (403)")
                     elif he:
                         log.warning(
                             "sync-status HTTP %s : %s",
@@ -467,6 +502,14 @@ class SyncAgent:
                 if reason and not skip_due_auth:
                     last_cooldown_ts = time.time()
                     m = self.run_cycle(reason, limit_bytes=limit_b)
+                    # WAL checkpoint périodique (toutes les ~100 opérations)
+                    self._wal_ops_since_checkpoint += (m.get("uploaded") or 0) + (m.get("deleted") or 0)
+                    if self._wal_ops_since_checkpoint >= 100:
+                        try:
+                            self.queue.wal_checkpoint("PASSIVE")
+                            self._wal_ops_since_checkpoint = 0
+                        except Exception:
+                            pass
                     err_str = "; ".join(m["errors"])[:2000] if m.get("errors") else None
                     errs = m.get("errors") or []
                     idle_cycle = (

@@ -195,7 +195,21 @@ class QueueStore:
         ).fetchone()
         return row[0] if row else None
 
+    def wal_checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:
+        """Checkpoint WAL : libère l'espace disque sans blocage (PASSIVE).
+
+        Retourne (busy, log, checkpointed) selon la doc SQLite.
+        Appeler périodiquement (ex: toutes les 100 transactions).
+        """
+        conn = self._conn()
+        row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        return (row[0], row[1], row[2]) if row else (0, 0, 0)
+
     def close(self) -> None:
         if hasattr(self._local, "conn"):
+            try:
+                self._local.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
             self._local.conn.close()
             del self._local.conn

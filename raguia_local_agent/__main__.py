@@ -83,21 +83,16 @@ def _pid_is_running(pid: int) -> bool:
 
 
 def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
-    """Empêche plusieurs instances locales simultanées.
+    """Empêche plusieurs instances locales simultanées (atomicité garantie).
 
-    Stratégie :
-    1) Lit le fichier existant ; s'il référence un PID actif → refuse.
-    2) Sinon, supprime puis recrée le fichier en exclusif (``O_CREAT | O_EXCL``)
-       pour fermer la fenêtre de course quand deux processus démarrent
-       simultanément.
-    3) En cas d'échec, on retombe sur un write_text simple (compat).
-
-    Retourne ``(ok, lock_path)``. Si ``ok=False``, une autre instance est active.
+    Utilise un lockfile avec O_CREAT | O_EXCL pour garantir l'exclusivité
+    sans race condition. Écrit via os.write() (compatible Windows/Unix).
     """
     APP_DATA_DIR.mkdir(mode=0o700, exist_ok=True)
     lock_path = APP_DATA_DIR / "agent.pid"
     current_pid = os.getpid()
 
+    # Étape 1 : vérifier si le PID existant est encore vivant
     if lock_path.exists():
         try:
             existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
@@ -109,15 +104,19 @@ def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
             and _pid_is_running(existing_pid)
         ):
             return False, None
+        # PID mort ou nôtre → on nettoie
         try:
             lock_path.unlink()
         except OSError:
             pass
 
+    # Étape 2 : création atomique avec O_CREAT | O_EXCL
+    # os.open avec O_EXCL est atomique sur tous les OS (y compris Windows)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
         fd = os.open(str(lock_path), flags, 0o600)
     except FileExistsError:
+        # Un autre processus a gagné la course — on revérifie son PID
         try:
             existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
         except Exception:
@@ -128,27 +127,32 @@ def _acquire_single_instance_lock() -> tuple[bool, Optional[Path]]:
             and _pid_is_running(existing_pid)
         ):
             return False, None
+        # Périmé : on écrase et on considère que c'est OK
         try:
-            lock_path.write_text(str(current_pid), encoding="utf-8")
-            return True, lock_path
-        except OSError:
+            lock_path.unlink()
+            fd = os.open(str(lock_path), flags, 0o600)
+        except (OSError, FileExistsError):
             return False, None
     except OSError:
-        try:
-            lock_path.write_text(str(current_pid), encoding="utf-8")
-            return True, lock_path
-        except OSError:
-            return False, None
+        return False, None
 
+    # Étape 3 : écriture atomique dans le fd (compatible Windows)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(current_pid))
+        pid_bytes = str(current_pid).encode("utf-8")
+        written = os.write(fd, pid_bytes)
+        if written != len(pid_bytes):
+            os.close(fd)
+            return False, None
+        os.fsync(fd)
     except OSError:
+        os.close(fd)
+        return False, None
+    finally:
         try:
             os.close(fd)
         except OSError:
             pass
-        return False, None
+
     return True, lock_path
 
 
@@ -167,22 +171,45 @@ def test_connection(cfg: AgentConfig) -> bool:
     import httpx
 
     print(f"Test de connexion vers {cfg.api_base}...")
-    try:
+
+    def _try_status():
         client = PortalApiClient(cfg.api_base, cfg.agent_token)
-        st = client.sync_status()
-        print("  OK Connecte")
-        print(f"  - Sync demandee : {st.get('sync_requested', False)}")
+        return client.sync_status()
+
+    try:
+        st = _try_status()
+        print("  OK Connecté")
+        print(f"  - Sync demandée : {st.get('sync_requested', False)}")
         if st.get("last_sync_at"):
-            print(f"  - Derniere sync : {st['last_sync_at']}")
+            print(f"  - Dernière sync : {st['last_sync_at']}")
         if st.get("last_error"):
-            print(f"  - Derniere erreur : {st['last_error']}")
+            print(f"  - Dernière erreur : {st['last_error']}")
         return True
     except httpx.HTTPStatusError as e:
         detail = http_response_detail(e.response)
+        # Si 401 et qu'on a le mot de passe, tenter un re-login
+        if e.response.status_code == 401 and cfg.agent_password:
+            print("  Token expiré, tentative de re-connexion automatique...")
+            try:
+                from raguia_local_agent.api_client import auto_login
+
+                cfg.agent_token = auto_login(
+                    cfg.api_base, cfg.client_slug, cfg.agent_password
+                )
+                st = _try_status()
+                print("  OK Reconnecté")
+                print(f"  - Sync demandée : {st.get('sync_requested', False)}")
+                if st.get("last_sync_at"):
+                    print(f"  - Dernière sync : {st['last_sync_at']}")
+                return True
+            except Exception as relogin_e:
+                print(f"  ERREUR re-connexion : {relogin_e}")
+                return False
+
         if e.response.status_code == 401:
-            print("  ERREUR 401 — connexion refusee par le portail :")
+            print("  ERREUR 401 — connexion refusée par le portail :")
             print(f"     {detail or e}")
-            print("  Utilisez « Se connecter / Reconnecter » dans le menu de l'icone.")
+            print("  Utilisez « Se connecter / Reconnecter » dans le menu de l'icône.")
         else:
             print(f"  ERREUR HTTP {e.response.status_code} : {detail or e}")
         return False
