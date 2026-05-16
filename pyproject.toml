@@ -1,6 +1,6 @@
 [project]
 name = "raguia-local-agent"
-version = "0.2.44"
+version = "0.2.45"
 description = "Agent de synchronisation locale du dossier RAGUIA vers le portail Raguia"
 readme = "README.md"
 requires-python = ">=3.11"
