@@ -39,12 +39,12 @@ _DEFAULT_DEV_API_BASE = "http://127.0.0.1:8000"
 _DEFAULT_ADMIN_SWITCH_FILENAME = ".raguia-admin.json"
 
 _COLORS = {
-    "idle":    "#22c55e",   # vert
-    "syncing": "#3b82f6",   # bleu
-    "update":  "#a855f7",   # violet (maj dispo)
-    "warning": "#f59e0b",   # orange
-    "error":   "#ef4444",   # rouge
-    "stopped": "#6b7280",   # gris
+    "idle": "#22c55e",  # vert
+    "syncing": "#3b82f6",  # bleu
+    "update": "#a855f7",  # violet (maj dispo)
+    "warning": "#f59e0b",  # orange
+    "error": "#ef4444",  # rouge
+    "stopped": "#6b7280",  # gris
 }
 
 
@@ -83,7 +83,9 @@ def _remove_windows_autostart() -> None:
     # 2) Raccourci Startup (compat ancien comportement)
     try:
         startup = Path(
-            os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
+            os.path.expandvars(
+                r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+            )
         )
         lnk = startup / "Raguia Agent.lnk"
         if lnk.exists():
@@ -126,7 +128,10 @@ def _admin_filename_namefile_candidates() -> list[Path]:
         paths += [
             exe.parent / "assets" / ".raguia-admin-name.txt",
             exe.parent.parent / "Resources" / "assets" / ".raguia-admin-name.txt",
-            exe.parent.parent.parent / "Resources" / "assets" / ".raguia-admin-name.txt",
+            exe.parent.parent.parent
+            / "Resources"
+            / "assets"
+            / ".raguia-admin-name.txt",
         ]
     else:
         here = Path(__file__).resolve()
@@ -142,7 +147,9 @@ def _resolve_admin_switch_filename() -> str:
       2) contenu d'un fichier .raguia-admin-name.txt
       3) valeur par defaut (compat)
     """
-    from_env = _sanitize_admin_filename(os.environ.get("RAGUIA_ADMIN_SWITCH_FILENAME", ""))
+    from_env = _sanitize_admin_filename(
+        os.environ.get("RAGUIA_ADMIN_SWITCH_FILENAME", "")
+    )
     if from_env:
         return from_env
     for p in _admin_filename_namefile_candidates():
@@ -187,19 +194,23 @@ def _load_admin_switch_config() -> dict | None:
             continue
         if not bool(data.get("enable_env_switch")):
             continue
-        prod_api = str(data.get("prod_api_base") or _DEFAULT_PROD_API_BASE).strip().rstrip("/")
-        dev_api = str(data.get("dev_api_base") or _DEFAULT_DEV_API_BASE).strip().rstrip("/")
+        prod_api = (
+            str(data.get("prod_api_base") or _DEFAULT_PROD_API_BASE).strip().rstrip("/")
+        )
+        dev_api = (
+            str(data.get("dev_api_base") or _DEFAULT_DEV_API_BASE).strip().rstrip("/")
+        )
         pin = str(data.get("pin") or "").strip()
         return {"prod_api_base": prod_api, "dev_api_base": dev_api, "pin": pin}
     return None
 
 
 class TrayStatus(str, Enum):
-    IDLE    = "idle"
+    IDLE = "idle"
     SYNCING = "syncing"
-    UPDATE  = "update"
+    UPDATE = "update"
     WARNING = "warning"
-    ERROR   = "error"
+    ERROR = "error"
     STOPPED = "stopped"
 
 
@@ -244,7 +255,11 @@ def _make_icon(status: str, size: int = 64, phase: int = 0):
 
     if status == "idle":
         draw.line(
-            [(center - 13, center + 1), (center - 4, center + 10), (center + 14, center - 10)],
+            [
+                (center - 13, center + 1),
+                (center - 4, center + 10),
+                (center + 14, center - 10),
+            ],
             fill=glyph,
             width=5,
             joint="curve",
@@ -259,8 +274,16 @@ def _make_icon(status: str, size: int = 64, phase: int = 0):
         draw.line([(center, center - 13), (center, center + 3)], fill=glyph, width=5)
         draw.ellipse([center - 3, center + 8, center + 3, center + 14], fill=glyph)
     elif status == "error":
-        draw.line([(center - 11, center - 11), (center + 11, center + 11)], fill=glyph, width=5)
-        draw.line([(center - 11, center + 11), (center + 11, center - 11)], fill=glyph, width=5)
+        draw.line(
+            [(center - 11, center - 11), (center + 11, center + 11)],
+            fill=glyph,
+            width=5,
+        )
+        draw.line(
+            [(center - 11, center + 11), (center + 11, center - 11)],
+            fill=glyph,
+            width=5,
+        )
     elif status == "stopped":
         draw.rectangle([center - 11, center - 3, center + 11, center + 3], fill=glyph)
 
@@ -280,6 +303,7 @@ class RaguiaTray:
         on_quit: Callable[[], None] | None = None,
     ) -> None:
         import pystray
+
         self._agent = agent
         self._on_quit = on_quit
         self._status = TrayStatus.IDLE
@@ -368,7 +392,7 @@ class RaguiaTray:
         else:
             self._stop_sync_animator()
         try:
-            self._tray.icon  = self._icons[self._status.value]
+            self._tray.icon = self._icons[self._status.value]
             self._tray.title = self._title()
         except Exception:
             pass
@@ -383,14 +407,18 @@ class RaguiaTray:
                 if self._tray is None or self._status != TrayStatus.SYNCING:
                     continue
                 self._sync_anim_phase = (self._sync_anim_phase + 28) % 360
-                self._icons["syncing"] = _make_icon("syncing", phase=self._sync_anim_phase)
+                self._icons["syncing"] = _make_icon(
+                    "syncing", phase=self._sync_anim_phase
+                )
                 try:
                     self._tray.icon = self._icons["syncing"]
                     self._tray.title = self._title()
                 except Exception:
                     pass
 
-        self._sync_anim_thread = threading.Thread(target=_loop, daemon=True, name="raguia-tray-sync-anim")
+        self._sync_anim_thread = threading.Thread(
+            target=_loop, daemon=True, name="raguia-tray-sync-anim"
+        )
         self._sync_anim_thread.start()
 
     def _stop_sync_animator(self) -> None:
@@ -435,11 +463,11 @@ class RaguiaTray:
     # ------------------------------------------------------------------
     def _title(self) -> str:
         labels = {
-            TrayStatus.IDLE:    "Raguia — Actif",
+            TrayStatus.IDLE: "Raguia — Actif",
             TrayStatus.SYNCING: "Raguia — Synchronisation...",
-            TrayStatus.UPDATE:  "Raguia — Mise a jour disponible",
+            TrayStatus.UPDATE: "Raguia — Mise a jour disponible",
             TrayStatus.WARNING: f"Raguia — Attention : {self._message}",
-            TrayStatus.ERROR:   f"Raguia — Erreur : {self._message}",
+            TrayStatus.ERROR: f"Raguia — Erreur : {self._message}",
             TrayStatus.STOPPED: "Raguia — Arrete",
         }
         return labels.get(self._status, "Raguia")
@@ -449,7 +477,9 @@ class RaguiaTray:
         admin_switch_cfg = _load_admin_switch_config()
 
         def open_folder(icon, item):
-            import subprocess, sys
+            import subprocess
+            import sys
+
             root = self._agent.root
             if sys.platform == "darwin":
                 subprocess.Popen(["open", str(root)])
@@ -459,9 +489,7 @@ class RaguiaTray:
                 subprocess.Popen(["xdg-open", str(root)])
 
         def sync_now(icon, item):
-            threading.Thread(
-                target=self._agent.force_sync, daemon=True
-            ).start()
+            threading.Thread(target=self._agent.force_sync, daemon=True).start()
 
         def reset_stuck(icon, item):
             n = self._agent.queue.reset_stuck()
@@ -515,12 +543,20 @@ class RaguiaTray:
                     # Toute erreur ici signifie de mauvais identifiants ou reseau
                     # inaccessible -> connexion abandonnee.
                     try:
-                        payload = portal_agent_login(self._agent.cfg.api_base, slug, password)
+                        payload = portal_agent_login(
+                            self._agent.cfg.api_base, slug, password
+                        )
                         new_token = str(payload.get("agent_access_token") or "").strip()
                         if not new_token:
-                            raise ValueError("Le portail n'a pas retourne de session agent.")
+                            raise ValueError(
+                                "Le portail n'a pas retourne de session agent."
+                            )
                     except Exception as e:
-                        detail = http_response_detail(e.response) if hasattr(e, "response") else str(e)  # type: ignore[attr-defined]
+                        detail = (
+                            http_response_detail(e.response)
+                            if hasattr(e, "response")
+                            else str(e)
+                        )  # type: ignore[attr-defined]
                         tray_dialogs.show_message(
                             "Connexion refusee",
                             f"Echec de connexion portail:\n{detail}",
@@ -549,7 +585,11 @@ class RaguiaTray:
                         if _is_401:
                             with suppress(Exception):
                                 self._agent.update_agent_token(old_token)
-                            _detail = http_response_detail(_se.response) if hasattr(_se, "response") else str(_se)  # type: ignore[attr-defined]
+                            _detail = (
+                                http_response_detail(_se.response)
+                                if hasattr(_se, "response")
+                                else str(_se)
+                            )  # type: ignore[attr-defined]
                             tray_dialogs.show_message(
                                 "Session refusee",
                                 f"Le portail a refuse la connexion (401) :\n{_detail}",
@@ -569,7 +609,9 @@ class RaguiaTray:
                     # Conserver une config complete meme si le fichier n'existe plus.
                     data.setdefault("api_base", self._agent.cfg.api_base)
                     data.setdefault("watch_parent", self._agent.cfg.watch_parent)
-                    data.setdefault("root_folder_name", self._agent.cfg.root_folder_name)
+                    data.setdefault(
+                        "root_folder_name", self._agent.cfg.root_folder_name
+                    )
                     data["client_slug"] = slug
                     data["agent_password"] = save_token(cfg_file, password)
                     with open(cfg_file, "w", encoding="utf-8") as f:
@@ -685,7 +727,11 @@ class RaguiaTray:
             self._begin_busy("Desinstallation en cours...")
             try:
                 cfg_path = os.environ.get("RAGUIA_AGENT_CONFIG")
-                cfg_file = Path(cfg_path) if cfg_path else (Path.home() / ".raguia" / "config.yaml")
+                cfg_file = (
+                    Path(cfg_path)
+                    if cfg_path
+                    else (Path.home() / ".raguia" / "config.yaml")
+                )
                 agent_dirs: list[Path] = []
                 if cfg_file.name == "raguia_agent.yaml":
                     agent_dirs.append(cfg_file.parent)
@@ -702,24 +748,47 @@ class RaguiaTray:
                     if os.name == "nt":
                         _remove_windows_autostart()
                     elif sys.platform == "darwin":
-                        plist = Path.home() / "Library" / "LaunchAgents" / "com.raguia.local.agent.plist"
+                        plist = (
+                            Path.home()
+                            / "Library"
+                            / "LaunchAgents"
+                            / "com.raguia.local.agent.plist"
+                        )
                         uid = str(os.getuid()) if hasattr(os, "getuid") else ""
                         if uid:
                             if plist.is_file():
-                                _safe_run(["launchctl", "bootout", f"gui/{uid}", str(plist)])
+                                _safe_run(
+                                    ["launchctl", "bootout", f"gui/{uid}", str(plist)]
+                                )
                             # fallback possible selon versions macOS / etat de l'agent
-                            _safe_run(["launchctl", "bootout", f"gui/{uid}/com.raguia.local.agent"])
+                            _safe_run(
+                                [
+                                    "launchctl",
+                                    "bootout",
+                                    f"gui/{uid}/com.raguia.local.agent",
+                                ]
+                            )
                         _safe_run(["launchctl", "remove", "com.raguia.local.agent"])
                         if plist.is_file():
                             _safe_run(["launchctl", "unload", str(plist)])
                             plist.unlink(missing_ok=True)
                     else:
                         user_cfg = Path(
-                            os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+                            os.environ.get(
+                                "XDG_CONFIG_HOME", str(Path.home() / ".config")
+                            )
                         )
                         unit = user_cfg / "systemd" / "user" / "raguia-agent.service"
                         if shutil.which("systemctl"):
-                            _safe_run(["systemctl", "--user", "disable", "--now", "raguia-agent.service"])
+                            _safe_run(
+                                [
+                                    "systemctl",
+                                    "--user",
+                                    "disable",
+                                    "--now",
+                                    "raguia-agent.service",
+                                ]
+                            )
                             _safe_run(["systemctl", "--user", "daemon-reload"])
                         if unit.exists():
                             unit.unlink()
@@ -764,7 +833,12 @@ class RaguiaTray:
                     else:
                         kwargs["start_new_session"] = True
                     subprocess.Popen(
-                        [sys.executable, "-c", cleanup_script, json.dumps([str(p) for p in norm])],
+                        [
+                            sys.executable,
+                            "-c",
+                            cleanup_script,
+                            json.dumps([str(p) for p in norm]),
+                        ],
                         **kwargs,
                     )
 
@@ -835,7 +909,9 @@ class RaguiaTray:
                 from . import __version__
 
                 current_version = __version__.strip()
-                current_version_known = bool(current_version and current_version != "0.0.0")
+                current_version_known = bool(
+                    current_version and current_version != "0.0.0"
+                )
                 current_label = current_version if current_version_known else "inconnue"
                 self._begin_busy("Recherche de mise a jour...")
 
@@ -867,7 +943,9 @@ class RaguiaTray:
                                 kind="warning",
                             )
                             return
-                        cmp = self._agent.updater.compare_versions(current_version, latest_version)
+                        cmp = self._agent.updater.compare_versions(
+                            current_version, latest_version
+                        )
                         if current_version_known and cmp == 0:
                             tray_dialogs.show_message(
                                 "Mise à jour",
@@ -909,7 +987,9 @@ class RaguiaTray:
                             return
 
                         try:
-                            update_info = self._agent.updater.build_update_info_from_release(data)
+                            update_info = (
+                                self._agent.updater.build_update_info_from_release(data)
+                            )
                         except Exception as e:
                             tray_dialogs.show_message(
                                 "Mise à jour — erreur",
@@ -953,12 +1033,22 @@ class RaguiaTray:
 
                     info_parts: list[str] = []
                     if latest_version:
-                        info_parts.append(f"Version annoncée par GitHub : {latest_version}")
+                        info_parts.append(
+                            f"Version annoncée par GitHub : {latest_version}"
+                        )
                     info_parts.append(f"Version du paquet actuel : {current_label}")
                     info_block = "\n".join(info_parts)
 
-                    cmp = self._agent.updater.compare_versions(current_version, latest_version)
-                    has_update = bool(latest_version and (cmp == -1 or (cmp is None and latest_version != current_version)))
+                    cmp = self._agent.updater.compare_versions(
+                        current_version, latest_version
+                    )
+                    has_update = bool(
+                        latest_version
+                        and (
+                            cmp == -1
+                            or (cmp is None and latest_version != current_version)
+                        )
+                    )
                     if has_update:
                         self._set_busy_message(
                             f"Mise a jour detectee ({current_label} -> {latest_version})"
@@ -974,7 +1064,9 @@ class RaguiaTray:
                             kind="info",
                         )
                     else:
-                        self._set_busy_message("Aucune mise a jour plus recente detectee.")
+                        self._set_busy_message(
+                            "Aucune mise a jour plus recente detectee."
+                        )
                         if latest_version and cmp == 1:
                             tray_dialogs.show_message(
                                 "Mise à jour",
@@ -993,7 +1085,9 @@ class RaguiaTray:
                             )
                             return
 
-                    if not tray_dialogs.confirm_git_pull_update(current_version, info_block):
+                    if not tray_dialogs.confirm_git_pull_update(
+                        current_version, info_block
+                    ):
                         tray_dialogs.show_message(
                             "Mise a jour annulee",
                             "La mise a jour locale a ete annulee.",
@@ -1014,7 +1108,7 @@ class RaguiaTray:
             threading.Thread(target=work, daemon=True).start()
 
         pending = self._agent.queue.pending_count()
-        stuck   = self._agent.queue.stuck_count()
+        stuck = self._agent.queue.stuck_count()
         last_ts = self._agent.queue.last_sync_at()
 
         last_str = "Jamais"
@@ -1023,9 +1117,9 @@ class RaguiaTray:
             if dt < 60:
                 last_str = "Il y a < 1 min"
             elif dt < 3600:
-                last_str = f"Il y a {int(dt/60)} min"
+                last_str = f"Il y a {int(dt / 60)} min"
             else:
-                last_str = f"Il y a {int(dt/3600)} h"
+                last_str = f"Il y a {int(dt / 3600)} h"
 
         items = [
             pystray.MenuItem(self._title(), None, enabled=False),
@@ -1037,7 +1131,11 @@ class RaguiaTray:
             pystray.MenuItem("Exporter un bundle support…", export_support),
             pystray.MenuItem("Se connecter / Reconnecter…", reconnect_portal),
             *(
-                [pystray.MenuItem("Maintenance (cache) — Basculer PROD/DEV", switch_environment)]
+                [
+                    pystray.MenuItem(
+                        "Maintenance (cache) — Basculer PROD/DEV", switch_environment
+                    )
+                ]
                 if admin_switch_cfg
                 else []
             ),
@@ -1072,6 +1170,7 @@ class RaguiaTray:
     # ------------------------------------------------------------------
     def run(self) -> None:
         import pystray
+
         icon = pystray.Icon(
             "raguia",
             self._icons["idle"],

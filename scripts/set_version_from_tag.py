@@ -45,7 +45,10 @@ def main() -> int:
         count=1,
     )
     if n != 1:
-        print("Impossible de mettre a jour project.version dans pyproject.toml", file=sys.stderr)
+        print(
+            "Impossible de mettre a jour project.version dans pyproject.toml",
+            file=sys.stderr,
+        )
         return 1
 
     pyproject.write_text(out, encoding="utf-8")

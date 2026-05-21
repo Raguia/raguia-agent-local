@@ -37,4 +37,3 @@ def test_load_config_migrates_plaintext_token_to_keyring(monkeypatch, tmp_path: 
 
     rewritten = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert rewritten["agent_password"] == secret_store.KEYRING_SENTINEL
-

@@ -11,7 +11,6 @@ import json
 import os
 import platform
 import threading
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -60,11 +59,12 @@ class AgentState:
 
 def _fallback_external_id(path: Path, size: int, mtime: float) -> str:
     """Identifiant stable et deterministe (SHA256) si inode/dev peu fiables.
-    
+
     Utilise hashlib.sha256 et non hash() car hash() est non-deterministe
     entre les lancements Python (PYTHONHASHSEED aleatoire).
     """
     import hashlib
+
     key = f"{path.resolve()}:{size}:{mtime}".encode()
     return f"fb:{hashlib.sha256(key).hexdigest()[:32]}"
 
@@ -134,9 +134,14 @@ class StateStore:
             if rel in self.state.files:
                 rec = self.state.files[rel]
                 if rec.external_id != ext:
-                    ambiguous = ext in self.state.by_external and self.state.by_external[ext] != rel
+                    ambiguous = (
+                        ext in self.state.by_external
+                        and self.state.by_external[ext] != rel
+                    )
                     if ambiguous:
-                        self.state.files[rel] = FileRecord(rel, ext, size, mtime, needs_review=True)
+                        self.state.files[rel] = FileRecord(
+                            rel, ext, size, mtime, needs_review=True
+                        )
                         return rel, None, True, ext
                     self.state.by_external.pop(rec.external_id, None)
 

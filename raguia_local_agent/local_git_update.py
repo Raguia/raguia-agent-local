@@ -2,6 +2,7 @@
 
 Utilisé par le menu icône « Vérifier / installer mise à jour » (sans téléchargement distant).
 """
+
 from __future__ import annotations
 
 import os
@@ -78,8 +79,7 @@ def _pip_install_editable(root: Path, py: Path) -> tuple[bool, str]:
         timeout=180,
     )
     chunks.append(
-        "[ensurepip]\n"
-        + ((ens.stdout or "") + (ens.stderr or "")).strip()[-800:]
+        "[ensurepip]\n" + ((ens.stdout or "") + (ens.stderr or "")).strip()[-800:]
     )
 
     pip_r = subprocess.run(

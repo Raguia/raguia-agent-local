@@ -11,6 +11,7 @@ import sys
 if getattr(sys, "frozen", False):
     try:
         import certifi as _certifi
+
         _ca = _certifi.where()
         os.environ.setdefault("SSL_CERT_FILE", _ca)
         os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)

@@ -23,4 +23,3 @@ def test_validate_api_base_rejects_portal_page_url():
         assert False, "Expected ValueError"
     except ValueError as e:
         assert "racine" in str(e)
-

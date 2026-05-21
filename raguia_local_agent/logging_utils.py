@@ -21,7 +21,9 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=True)
 
 
-def setup_logging(app_data_dir: Path, *, level: str = "INFO", structured: bool = True) -> Path:
+def setup_logging(
+    app_data_dir: Path, *, level: str = "INFO", structured: bool = True
+) -> Path:
     app_data_dir.mkdir(parents=True, exist_ok=True)
     log_path = app_data_dir / "agent.log"
     root = logging.getLogger()
@@ -50,7 +52,9 @@ def setup_logging(app_data_dir: Path, *, level: str = "INFO", structured: bool =
     return log_path
 
 
-def export_support_bundle(app_data_dir: Path, output_zip: Path, doctor_summary: str) -> Path:
+def export_support_bundle(
+    app_data_dir: Path, output_zip: Path, doctor_summary: str
+) -> Path:
     app_data_dir.mkdir(parents=True, exist_ok=True)
     output_zip.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output_zip, "w", compression=ZIP_DEFLATED) as zf:
@@ -62,4 +66,3 @@ def export_support_bundle(app_data_dir: Path, output_zip: Path, doctor_summary: 
             zf.write(report, arcname="doctor_latest.txt")
         zf.writestr("doctor_now.txt", doctor_summary)
     return output_zip
-

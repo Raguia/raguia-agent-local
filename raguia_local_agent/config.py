@@ -252,7 +252,9 @@ def _migrate_plaintext_password_to_keyring(
     stored_value = save_token(path, raw_password)
     if stored_value == raw_password:
         # keyring indisponible : on garde le mot de passe en clair
-        log.info("Trousseau OS indisponible — mot de passe conservé en clair dans %s", path)
+        log.info(
+            "Trousseau OS indisponible — mot de passe conservé en clair dans %s", path
+        )
         return
     if raw_password == stored_value:
         return

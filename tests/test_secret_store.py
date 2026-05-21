@@ -24,7 +24,9 @@ def test_save_and_load_token_with_keyring(monkeypatch, tmp_path: Path):
     assert secret_store.load_token(cfg, stored) == "jwt-123"
 
 
-def test_default_alias_does_not_leak_token_to_other_configs(monkeypatch, tmp_path: Path):
+def test_default_alias_does_not_leak_token_to_other_configs(
+    monkeypatch, tmp_path: Path
+):
     fake = _FakeKeyring()
     monkeypatch.setattr(secret_store, "_get_keyring_module", lambda: fake)
 
@@ -53,8 +55,4 @@ def test_load_token_accepts_legacy_default_alias(monkeypatch, tmp_path: Path):
     cfg = tmp_path / "config.yaml"
 
     fake.set_password(secret_store.KEYRING_SERVICE, "default", "jwt-legacy")
-    assert (
-        secret_store.load_token(cfg, secret_store.KEYRING_SENTINEL)
-        == "jwt-legacy"
-    )
-
+    assert secret_store.load_token(cfg, secret_store.KEYRING_SENTINEL) == "jwt-legacy"

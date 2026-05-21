@@ -322,6 +322,7 @@ def main() -> None:
             if not cfg.agent_token and cfg.agent_password:
                 try:
                     from raguia_local_agent.api_client import auto_login
+
                     cfg.agent_token = auto_login(
                         cfg.api_base, cfg.client_slug, cfg.agent_password
                     )
@@ -373,6 +374,7 @@ def main() -> None:
         if cfg.agent_password and not cfg.agent_token:
             try:
                 from raguia_local_agent.api_client import auto_login
+
                 cfg.agent_token = auto_login(
                     cfg.api_base, cfg.client_slug, cfg.agent_password
                 )

@@ -6,7 +6,9 @@ import yaml
 from raguia_local_agent import config, secret_store
 
 
-def test_secure_storage_refuses_plaintext_when_keyring_available(monkeypatch, tmp_path: Path):
+def test_secure_storage_refuses_plaintext_when_keyring_available(
+    monkeypatch, tmp_path: Path
+):
     class _FakeKeyring:
         def set_password(self, service, username, password):
             return None
@@ -47,4 +49,3 @@ def test_secure_storage_does_not_block_without_keyring(monkeypatch, tmp_path: Pa
     )
     cfg = config.load_config(cfg_path)
     assert cfg.agent_password == "plain-token"
-

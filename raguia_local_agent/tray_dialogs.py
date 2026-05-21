@@ -176,7 +176,6 @@ def _run_tk_subprocess(code: str) -> subprocess.CompletedProcess | None:
     )
 
 
-
 def prompt_portal_login() -> tuple[str, str] | None:
     """Demande slug + mot de passe portail. Retourne ``None`` si annulation."""
     out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
@@ -233,7 +232,7 @@ def prompt_portal_login() -> tuple[str, str] | None:
         )
         r = _run_tk_subprocess(script)
         if r and r.returncode == 0:
-            raw = Path(path).read_text(encoding='utf-8').splitlines()
+            raw = Path(path).read_text(encoding="utf-8").splitlines()
             if raw and raw[0].strip() == "__CANCEL__":
                 return None
             if len(raw) >= 3 and raw[0].strip() == "__OK__":
@@ -311,9 +310,9 @@ def prompt_text(title: str, prompt: str, *, masked: bool = False) -> str | None:
                 a = _run_osascript(
                     (
                         "text returned of (display dialog "
-                        f"{prompt_as} with title {title_as} default answer \"\"{hidden} "
-                        "buttons {\"Annuler\", \"Valider\"} default button \"Valider\" "
-                        "cancel button \"Annuler\")"
+                        f'{prompt_as} with title {title_as} default answer ""{hidden} '
+                        'buttons {"Annuler", "Valider"} default button "Valider" '
+                        'cancel button "Annuler")'
                     )
                 )
                 if a and a.returncode == 0:
@@ -369,14 +368,20 @@ def show_message(title: str, message: str, *, kind: str = "info") -> None:
     try:
         r = _run_tk_subprocess(script)
         if not r or r.returncode != 0:
-            log.warning("show_message: %s", (r.stderr or "")[:300] if r else "no-python")
+            log.warning(
+                "show_message: %s", (r.stderr or "")[:300] if r else "no-python"
+            )
             if sys.platform == "darwin":
-                icon = "stop" if kind == "error" else ("caution" if kind == "warning" else "note")
+                icon = (
+                    "stop"
+                    if kind == "error"
+                    else ("caution" if kind == "warning" else "note")
+                )
                 message_as = _as_quote(message)
                 title_as = _as_quote(title)
                 _run_osascript(
-                    f"display dialog {message_as} with title {title_as} buttons {{\"OK\"}} "
-                    f"default button \"OK\" with icon {icon}"
+                    f'display dialog {message_as} with title {title_as} buttons {{"OK"}} '
+                    f'default button "OK" with icon {icon}'
                 )
             elif sys.platform.startswith("linux"):
                 if kind == "error":
@@ -403,7 +408,7 @@ def confirm_git_pull_update(
         f"{prefix}"
         "Cette opération va exécuter dans le dossier du clone Git :\n"
         "  • git pull\n"
-        "  • pip install -e \".[tray]\" (venv .raguia_agent)\n\n"
+        '  • pip install -e ".[tray]" (venv .raguia_agent)\n\n'
         f"Version du paquet actuel : {local_version}\n\n"
         "Continuer ?"
     )
@@ -439,8 +444,8 @@ def confirm_git_pull_update(
                 (
                     "button returned of (display dialog "
                     f"{body_as} with title {title_as} "
-                    "buttons {\"Annuler\", \"Continuer\"} default button \"Continuer\" "
-                    "cancel button \"Annuler\")"
+                    'buttons {"Annuler", "Continuer"} default button "Continuer" '
+                    'cancel button "Annuler")'
                 )
             )
             return bool(a and a.returncode == 0 and "Continuer" in (a.stdout or ""))
@@ -505,8 +510,8 @@ def confirm_agent_update(current_version: str, new_version: str) -> bool:
                 (
                     "button returned of (display dialog "
                     f"{body_as} with title {title_as} "
-                    "buttons {\"Annuler\", \"Continuer\"} default button \"Continuer\" "
-                    "cancel button \"Annuler\")"
+                    'buttons {"Annuler", "Continuer"} default button "Continuer" '
+                    'cancel button "Annuler")'
                 )
             )
             return bool(a and a.returncode == 0 and "Continuer" in (a.stdout or ""))
@@ -569,8 +574,8 @@ def confirm_uninstall() -> bool:
                 (
                     "button returned of (display dialog "
                     f"{body_as} with title {title_as} with icon caution "
-                    "buttons {\"Annuler\", \"Desinstaller\"} default button \"Desinstaller\" "
-                    "cancel button \"Annuler\")"
+                    'buttons {"Annuler", "Desinstaller"} default button "Desinstaller" '
+                    'cancel button "Annuler")'
                 )
             )
             return bool(a and a.returncode == 0 and "Desinstaller" in (a.stdout or ""))

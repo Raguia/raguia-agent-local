@@ -8,6 +8,7 @@ Usage :
 Utilisé par la CI qui synchronise vers raguia-agent-local : la base est la derniere
 version publiée sur le depot public, pas celle du monorepo.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,7 +69,9 @@ def replace_version(text: str, new_ver: str) -> str:
         count=1,
     )
     if n != 1:
-        raise ValueError("Impossible de remplacer la ligne version = dans pyproject.toml")
+        raise ValueError(
+            "Impossible de remplacer la ligne version = dans pyproject.toml"
+        )
     return out
 
 
@@ -108,7 +111,9 @@ def main() -> int:
     else:
         base = (args.base or "").strip() or cur_in_file
     if not base:
-        print("Pas de version de base et pas de version dans le fichier.", file=sys.stderr)
+        print(
+            "Pas de version de base et pas de version dans le fichier.", file=sys.stderr
+        )
         return 1
     new_ver = bump_patch(base)
     pyproject.write_text(replace_version(text, new_ver), encoding="utf-8")

@@ -22,7 +22,9 @@ def test_strips_trailing_api_portal_suffix_with_slash():
 
 
 def test_does_not_strip_unrelated_path():
-    assert validate_api_base("https://example.com/raguia") == "https://example.com/raguia"
+    assert (
+        validate_api_base("https://example.com/raguia") == "https://example.com/raguia"
+    )
 
 
 def test_keeps_clean_root_url_unchanged():

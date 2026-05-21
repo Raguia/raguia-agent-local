@@ -32,7 +32,11 @@ def _read_version() -> str:
             if info_plist.is_file():
                 with info_plist.open("rb") as f:
                     data = plistlib.load(f) or {}
-                v = str(data.get("CFBundleShortVersionString") or data.get("CFBundleVersion") or "").strip()
+                v = str(
+                    data.get("CFBundleShortVersionString")
+                    or data.get("CFBundleVersion")
+                    or ""
+                ).strip()
                 if v:
                     return v
     except Exception:

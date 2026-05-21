@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -25,13 +25,21 @@ log = logging.getLogger(__name__)
 # Extensions et prefixes de fichiers temporaires a ignorer
 _IGNORE_PREFIXES = ("~$", ".~", "._")
 _IGNORE_EXTENSIONS = {
-    ".tmp", ".part", ".crdownload", ".download",
-    ".swp", ".swo", ".bak",                   # editeurs Linux/vim
-    ".orig",                                   # git/patch
+    ".tmp",
+    ".part",
+    ".crdownload",
+    ".download",
+    ".swp",
+    ".swo",
+    ".bak",  # editeurs Linux/vim
+    ".orig",  # git/patch
 }
 _IGNORE_NAMES = {
-    ".raguia_state.json", ".raguia_state.json.tmp",
-    ".DS_Store", "Thumbs.db", "desktop.ini",
+    ".raguia_state.json",
+    ".raguia_state.json.tmp",
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
 }
 
 
@@ -40,7 +48,7 @@ def _should_ignore(path: Path) -> bool:
     # Securite : ignorer les liens symboliques (evite d'uploader /etc/passwd si l'utilisateur cree un lien)
     if path.is_symlink():
         return True
-        
+
     name = path.name
     # Fichiers systeme et etat interne
     if name in _IGNORE_NAMES:

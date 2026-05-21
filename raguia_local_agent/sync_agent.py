@@ -73,6 +73,7 @@ class SyncAgent:
         """Calcule la taille du dossier via os.scandir récursif (perf optimale)."""
         total = 0
         try:
+
             def _scan_dir(path: Path) -> None:
                 nonlocal total
                 try:
@@ -82,7 +83,11 @@ class SyncAgent:
                                 _scan_dir(Path(entry.path))
                             elif entry.is_file():
                                 name = entry.name
-                                if name.startswith(".") or name.startswith("~$") or name.endswith(".tmp"):
+                                if (
+                                    name.startswith(".")
+                                    or name.startswith("~$")
+                                    or name.endswith(".tmp")
+                                ):
                                     continue
                                 try:
                                     total += entry.stat().st_size
@@ -90,6 +95,7 @@ class SyncAgent:
                                     pass
                 except PermissionError:
                     pass
+
             _scan_dir(self.root)
         except Exception as e:
             log.warning("Erreur calcul taille dossier: %s", e)
@@ -425,7 +431,10 @@ class SyncAgent:
                             )
                     elif he and he.response.status_code == 403:
                         detail_lower = (detail or "").lower()
-                        if "local_agent_enabled" in detail_lower or "agent" in detail_lower:
+                        if (
+                            "local_agent_enabled" in detail_lower
+                            or "agent" in detail_lower
+                        ):
                             log.error(
                                 "Agent local désactivé par l'administrateur (403). Arrêt."
                             )
@@ -503,7 +512,9 @@ class SyncAgent:
                     last_cooldown_ts = time.time()
                     m = self.run_cycle(reason, limit_bytes=limit_b)
                     # WAL checkpoint périodique (toutes les ~100 opérations)
-                    self._wal_ops_since_checkpoint += (m.get("uploaded") or 0) + (m.get("deleted") or 0)
+                    self._wal_ops_since_checkpoint += (m.get("uploaded") or 0) + (
+                        m.get("deleted") or 0
+                    )
                     if self._wal_ops_since_checkpoint >= 100:
                         try:
                             self.queue.wal_checkpoint("PASSIVE")

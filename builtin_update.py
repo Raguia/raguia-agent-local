@@ -5,6 +5,7 @@
 
 Préférez aussi : ./update.sh ou ``python -m raguia_local_agent.local_git_update``
 """
+
 from raguia_local_agent.local_git_update import main
 
 if __name__ == "__main__":

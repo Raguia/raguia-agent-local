@@ -79,7 +79,9 @@ class QueueStore:
     # ------------------------------------------------------------------
     # API publique
     # ------------------------------------------------------------------
-    def enqueue(self, rel_path: str, abs_path: str, event_type: str = "modified") -> None:
+    def enqueue(
+        self, rel_path: str, abs_path: str, event_type: str = "modified"
+    ) -> None:
         """Ajoute ou rafraichit un fichier dans la file (reset attempts)."""
         conn = self._conn()
         conn.execute(
@@ -161,15 +163,21 @@ class QueueStore:
         return self._conn().execute("SELECT COUNT(*) FROM queue").fetchone()[0]
 
     def pending_delete_count(self) -> int:
-        return self._conn().execute(
-            "SELECT COUNT(*) FROM queue WHERE COALESCE(event_type, 'modified') = 'deleted'"
-        ).fetchone()[0]
+        return (
+            self._conn()
+            .execute(
+                "SELECT COUNT(*) FROM queue WHERE COALESCE(event_type, 'modified') = 'deleted'"
+            )
+            .fetchone()[0]
+        )
 
     def stuck_count(self, max_attempts: int = MAX_TRIES_BEFORE_STUCK) -> int:
         """Fichiers bloques (trop de tentatives) - souvent Word/Excel verrouillesou fichiers corrompus."""
-        return self._conn().execute(
-            "SELECT COUNT(*) FROM queue WHERE attempts >= ?", (max_attempts,)
-        ).fetchone()[0]
+        return (
+            self._conn()
+            .execute("SELECT COUNT(*) FROM queue WHERE attempts >= ?", (max_attempts,))
+            .fetchone()[0]
+        )
 
     def reset_stuck(self, max_attempts: int = MAX_TRIES_BEFORE_STUCK) -> int:
         """Remet les fichiers bloques a zero (appele manuellement depuis le tray)."""
@@ -182,17 +190,23 @@ class QueueStore:
         return cur.rowcount
 
     def recent_errors(self, limit: int = 5) -> list[dict]:
-        rows = self._conn().execute(
-            """SELECT rel_path, synced_at, error_msg FROM sync_log
+        rows = (
+            self._conn()
+            .execute(
+                """SELECT rel_path, synced_at, error_msg FROM sync_log
                WHERE status='error' ORDER BY synced_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
+                (limit,),
+            )
+            .fetchall()
+        )
         return [dict(r) for r in rows]
 
     def last_sync_at(self) -> float | None:
-        row = self._conn().execute(
-            "SELECT MAX(synced_at) FROM sync_log WHERE status='ok'"
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute("SELECT MAX(synced_at) FROM sync_log WHERE status='ok'")
+            .fetchone()
+        )
         return row[0] if row else None
 
     def wal_checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:

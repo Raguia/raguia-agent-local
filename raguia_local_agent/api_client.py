@@ -28,6 +28,7 @@ def ssl_verify():
     """
     try:
         import certifi
+
         return certifi.where()
     except Exception:
         return True
@@ -65,6 +66,8 @@ def http_response_detail(response: httpx.Response) -> str:
     except Exception:
         pass
     return (response.text or "").strip().replace("\n", " ")[:400]
+
+
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 2.0  # secondes (x2 a chaque tentative)
 
@@ -103,7 +106,12 @@ def validate_api_base(api_base: str) -> str:
 
 
 def _request_with_retry(
-    client: httpx.Client, method: str, url: str, *, retries: int = _MAX_RETRIES, **kwargs
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    retries: int = _MAX_RETRIES,
+    **kwargs,
 ) -> httpx.Response:
     """Effectue une requête HTTP avec retry exponentiel sur erreurs transitoires."""
     delay = _RETRY_BACKOFF
@@ -111,16 +119,32 @@ def _request_with_retry(
         try:
             r = client.request(method, url, **kwargs)
             if r.status_code in _RETRYABLE_STATUS and attempt < retries:
-                log.warning("HTTP %s depuis %s (tentative %d/%d), retry dans %.1fs...",
-                            r.status_code, url, attempt + 1, retries, delay)
+                log.warning(
+                    "HTTP %s depuis %s (tentative %d/%d), retry dans %.1fs...",
+                    r.status_code,
+                    url,
+                    attempt + 1,
+                    retries,
+                    delay,
+                )
                 time.sleep(delay)
                 delay *= 2
                 continue
             return r
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+        except (
+            httpx.ConnectError,
+            httpx.TimeoutException,
+            httpx.RemoteProtocolError,
+        ) as e:
             if attempt < retries:
-                log.warning("Erreur reseau %s (tentative %d/%d), retry dans %.1fs: %s",
-                            url, attempt + 1, retries, delay, e)
+                log.warning(
+                    "Erreur reseau %s (tentative %d/%d), retry dans %.1fs: %s",
+                    url,
+                    attempt + 1,
+                    retries,
+                    delay,
+                    e,
+                )
                 time.sleep(delay)
                 delay *= 2
             else:
@@ -246,11 +270,15 @@ class PortalApiClient:
                     " Utilisez la racine du site (ex: https://mon-domaine.tld), "
                     "pas une URL de page comme /portal/<slug>."
                 )
-            elif "text/html" in ct or preview.startswith("<!DOCTYPE") or preview.startswith("<html"):
+            elif (
+                "text/html" in ct
+                or preview.startswith("<!DOCTYPE")
+                or preview.startswith("<html")
+            ):
                 hint = (
                     " Le serveur a renvoye une page HTML au lieu du JSON API — souvent "
                     "`api_base` pointe vers le site statique ou le frontend seul. "
-                    "Mettez l'URL exacte du backend Raguia (meme origine que GET /health -> {\"status\":\"ok\"}), "
+                    'Mettez l\'URL exacte du backend Raguia (meme origine que GET /health -> {"status":"ok"}), '
                     "sans chemin supplementaire sauf si votre hebergeur expose l API sous un prefixe."
                 )
             raise ValueError(

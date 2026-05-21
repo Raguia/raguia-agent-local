@@ -21,7 +21,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -210,22 +209,36 @@ class AgentUpdater:
         binary_asset: dict | None = None
         if sys.platform == "win32":
             binary_asset = next(
-                (a for a in assets if _asset_name(a).endswith(".exe") and "windows" in _asset_name(a)),
+                (
+                    a
+                    for a in assets
+                    if _asset_name(a).endswith(".exe") and "windows" in _asset_name(a)
+                ),
                 None,
             ) or next((a for a in assets if _asset_name(a).endswith(".exe")), None)
         elif sys.platform == "darwin":
             binary_asset = next(
-                (a for a in assets if _asset_name(a).endswith(".zip") and "macos" in _asset_name(a)),
+                (
+                    a
+                    for a in assets
+                    if _asset_name(a).endswith(".zip") and "macos" in _asset_name(a)
+                ),
                 None,
             ) or next((a for a in assets if _asset_name(a).endswith(".zip")), None)
         else:
             binary_asset = next(
-                (a for a in assets if _asset_name(a).endswith((".bin", ".appimage", ".tar.gz"))),
+                (
+                    a
+                    for a in assets
+                    if _asset_name(a).endswith((".bin", ".appimage", ".tar.gz"))
+                ),
                 None,
             )
 
         if not binary_asset:
-            raise ValueError("Aucun binaire compatible trouve dans la derniere release GitHub.")
+            raise ValueError(
+                "Aucun binaire compatible trouve dans la derniere release GitHub."
+            )
 
         download_url = str(binary_asset.get("browser_download_url") or "").strip()
         if not download_url:
@@ -262,7 +275,9 @@ class AgentUpdater:
         r.raise_for_status()
         sha256 = _parse_sha256_text(r.text or "")
         if not sha256:
-            raise ValueError("Impossible de lire le hash SHA256 depuis l'asset .sha256.")
+            raise ValueError(
+                "Impossible de lire le hash SHA256 depuis l'asset .sha256."
+            )
 
         return {
             "version": str(release.get("version") or "").strip(),
@@ -300,7 +315,9 @@ class AgentUpdater:
                     latest,
                 )
                 return False
-            if cmp is None and latest != _normalize_version(str(current_version).strip()):
+            if cmp is None and latest != _normalize_version(
+                str(current_version).strip()
+            ):
                 # Fallback non-semver: rester permissif (ancienne logique).
                 return True
         except Exception as e:
@@ -343,7 +360,9 @@ class AgentUpdater:
         # et éventuellement hôtes additionnels envoyés par le portail).
         parsed_base = urlparse(self.client.api_base)
         parsed_dl = urlparse(download_url)
-        allowed_hosts = _extract_allowed_hosts(update_info, (parsed_base.hostname or ""))
+        allowed_hosts = _extract_allowed_hosts(
+            update_info, (parsed_base.hostname or "")
+        )
         if parsed_dl.scheme != "https":
             log.error("Mise a jour refusee : URL de telechargement non HTTPS.")
             return False
@@ -413,10 +432,22 @@ class AgentUpdater:
             try:
                 if pending_app.exists():
                     import shutil as _shutil
+
                     _shutil.rmtree(pending_app, ignore_errors=True)
 
                 import subprocess
-                subprocess.run(["unzip", "-q", "-o", str(pending_file), "-d", str(pending_app.parent / "_unzip_tmp")], check=True)
+
+                subprocess.run(
+                    [
+                        "unzip",
+                        "-q",
+                        "-o",
+                        str(pending_file),
+                        "-d",
+                        str(pending_app.parent / "_unzip_tmp"),
+                    ],
+                    check=True,
+                )
 
                 # Le zip contient raguia-agent.app/ à la racine
                 extracted_app = pending_app.parent / "_unzip_tmp" / "raguia-agent.app"
@@ -436,6 +467,7 @@ class AgentUpdater:
                 try:
                     pending_file.unlink(missing_ok=True)
                     import shutil as _shutil2
+
                     tmp_dir = pending_app.parent / "_unzip_tmp"
                     if tmp_dir.exists():
                         _shutil2.rmtree(tmp_dir, ignore_errors=True)
@@ -460,6 +492,7 @@ class AgentUpdater:
 # Helpers spawn-and-replace (hors classe pour testabilité)
 # ------------------------------------------------------------------
 
+
 def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
     """Spawne cmd.exe détaché : attend la sortie de l'agent, déplace, relance.
 
@@ -476,7 +509,7 @@ def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
         f"Start-Sleep -Seconds {_REPLACE_DELAY_S};"
         f"$src = '{new}'.Replace(\"'\",\"''\");"
         f"$dst = '{cur}'.Replace(\"'\",\"''\");"
-        f"$old = \"$dst.old.exe\";"
+        f'$old = "$dst.old.exe";'
         "if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force -ErrorAction Ignore };"
         "if (Test-Path -LiteralPath $dst) { Rename-Item -LiteralPath $dst -NewName (Split-Path $old -Leaf) -ErrorAction Ignore };"
         "$ok = $false;"
@@ -493,7 +526,15 @@ def _spawn_replace_windows(current_exe: Path, pending_exe: Path) -> bool:
     try:
         pwsh = shutil.which("powershell") or "powershell.exe"
         subprocess.Popen(
-            [pwsh, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+            [
+                pwsh,
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps_cmd,
+            ],
             creationflags=0x08000000 | 0x00000008,
             close_fds=True,
             stdout=subprocess.DEVNULL,
@@ -521,9 +562,9 @@ def _spawn_replace_macos(current_app: Path, pending_app: Path) -> bool:
         "set -uo pipefail; "
         f"sleep {_REPLACE_DELAY_S}; "
         f"rm -rf {bak}; "
-        f'if [ -d {cur} ]; then mv {cur} {bak} || exit 1; fi; '
-        f'if ! mv {new} {cur}; then '
-        f'  if [ -d {bak} ]; then mv {bak} {cur}; fi; '
+        f"if [ -d {cur} ]; then mv {cur} {bak} || exit 1; fi; "
+        f"if ! mv {new} {cur}; then "
+        f"  if [ -d {bak} ]; then mv {bak} {cur}; fi; "
         f"  exit 1; "
         f"fi; "
         f"xattr -dr com.apple.quarantine {cur} || true; "
@@ -550,10 +591,7 @@ def _spawn_replace_linux(current_exe: Path, pending_exe: Path) -> bool:
     cur = shlex.quote(str(current_exe))
     new = shlex.quote(str(pending_exe))
     bash_cmd = (
-        f"sleep {_REPLACE_DELAY_S} "
-        f"&& mv -f {new} {cur} "
-        f"&& chmod +x {cur} "
-        f"&& {cur} &"
+        f"sleep {_REPLACE_DELAY_S} && mv -f {new} {cur} && chmod +x {cur} && {cur} &"
     )
     try:
         subprocess.Popen(
