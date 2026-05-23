@@ -14,7 +14,7 @@ Si vous découvrez une faille de sécurité dans cet agent, **ne pas ouvrir une 
 Contactez-nous directement via le portail Raguia ou par e-mail à l'adresse indiquée sur votre espace client.
 
 Nous nous engageons à :
-- Accuser réception sous 48h
+- Accuser réception sous 24h
 - Vous tenir informé de l'avancement du correctif
 - Publier un correctif dans les meilleurs délais
 
