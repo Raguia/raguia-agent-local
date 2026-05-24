@@ -3,7 +3,7 @@ use crate::config;
 use crate::queue::{self, MAX_TRIES_BEFORE_STUCK};
 use crate::updater;
 use crate::watcher;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -108,7 +108,7 @@ fn is_file_stable(path: &PathBuf, stability_secs: f64) -> bool {
 }
 
 /// Compute folder size recursively (for quota check).
-fn get_local_folder_size(root: &PathBuf) -> u64 {
+fn get_local_folder_size(root: &Path) -> u64 {
     let mut total = 0u64;
     if !root.is_dir() {
         return 0;
@@ -224,7 +224,7 @@ pub async fn run_sync_loop(
 
         // ── Reload config periodically (detect wizard/UI changes) ──
         config_reload_counter += 1;
-        if config_reload_counter % 6 == 0 {
+        if config_reload_counter.is_multiple_of(6) {
             if let Ok(refreshed) = config.load_config() {
                 // Only log on actual changes
                 if refreshed.api_url != cfg.api_url
@@ -513,10 +513,11 @@ pub struct CycleMetrics {
 
 // ─── Single sync cycle ───────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn run_cycle(
     api: &api::Client,
     queue: &queue::Store,
-    root: &PathBuf,
+    root: &Path,
     root_label: &str,
     max_files_per_cycle: u32,
     stability_secs: f64,
@@ -719,7 +720,7 @@ async fn run_cycle(
 
 fn apply_remote_deletions(
     queue: &queue::Store,
-    root: &PathBuf,
+    root: &Path,
     deletions: &[api::RemoteDeletion],
     app_handle: &AppHandle,
 ) {
@@ -728,7 +729,7 @@ fn apply_remote_deletions(
     }
 
     // Canonicalize root once for path traversal safety
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
     let mut deleted = 0u64;
     let mut failed = 0u64;

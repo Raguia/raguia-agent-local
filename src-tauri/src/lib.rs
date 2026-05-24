@@ -343,11 +343,7 @@ pub fn run() {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
                     tracing::error!("Failed to init queue store: {}", e);
-                    return Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    ))
-                        .into());
+                    return Err(Box::new(std::io::Error::other(e.to_string())).into());
                 }
             };
 

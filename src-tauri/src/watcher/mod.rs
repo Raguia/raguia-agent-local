@@ -1,8 +1,181 @@
-// File system watcher — monitors configured directories for changes
-//
-// Uses the `notify` crate (cross-platform filesystem events).
-// Debounces rapid changes and enqueues files for sync.
+use crate::config;
+use crate::queue;
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc;
+use thiserror::Error;
 
-mod watcher;
+/// Watcher errors
+#[derive(Error, Debug)]
+pub enum WatcherError {
+    #[error("Notify error: {0}")]
+    Notify(#[from] notify::Error),
 
-pub use watcher::*;
+    #[error("Config error: {0}")]
+    Config(String),
+}
+
+/// The file system watcher that feeds changes into the sync queue.
+///
+/// Uses ``notify`` crate with recommended backend:
+/// - macOS: FSEvents (kernel-level, efficient)
+/// - Linux: inotify
+/// - Windows: ReadDirectoryChangesW
+///
+/// Design vs Python ``watcher.py``:
+/// - Same ``_should_ignore`` logic for temp/hidden files
+/// - Same extension filtering
+/// - But typed errors and proper Send+Sync
+pub struct Watcher {
+    config: Arc<config::Manager>,
+    queue: Arc<queue::Store>,
+    inner: Option<RecommendedWatcher>,
+    root: PathBuf,
+}
+
+impl Watcher {
+    /// Create a new file watcher (starts in paused state).
+    pub fn new(config: Arc<config::Manager>, queue: Arc<queue::Store>) -> Self {
+        let root = config
+            .load_config()
+            .map(|c| c.root_path())
+            .unwrap_or_else(|_| PathBuf::from("."));
+
+        Self {
+            config,
+            queue,
+            inner: None,
+            root,
+        }
+    }
+
+    /// Start watching the configured directory.
+    pub fn start(&mut self) -> Result<(), WatcherError> {
+        let app_config = self
+            .config
+            .load_config()
+            .map_err(|e| WatcherError::Config(e.to_string()))?;
+
+        let root = app_config.root_path();
+        let queue = self.queue.clone();
+        let root_for_thread = root.clone();
+        let extensions: Vec<String> = app_config.supported_extensions.clone();
+
+        let (tx, rx) = mpsc::channel::<Result<Event, notify::Error>>();
+
+        let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
+        watcher.watch(&root, RecursiveMode::Recursive)?;
+
+        // Spawn a thread to process file system events
+        std::thread::spawn(move || {
+            for event in rx {
+                match event {
+                    Ok(event) => {
+                        Self::handle_notify_event(&queue, &event, &root_for_thread, &extensions);
+                    }
+                    Err(e) => {
+                        tracing::error!("Watcher error: {}", e);
+                    }
+                }
+            }
+        });
+
+        self.inner = Some(watcher);
+        self.root = root.clone();
+        tracing::info!("File watcher started on: {:?}", root);
+        Ok(())
+    }
+
+    /// Stop the file watcher.
+    pub fn stop(&mut self) {
+        self.inner = None;
+        tracing::info!("File watcher stopped");
+    }
+
+    /// Process a single notify event and enqueue changed files.
+    ///
+    /// Matches Python ``watcher._on_fs_event()`` + ``_should_ignore()`` logic.
+    /// Filters by supported extensions from the current config.
+    fn handle_notify_event(queue: &queue::Store, event: &Event, root: &Path, supported_extensions: &[String]) {
+        // Determine event type
+        let event_type = match event.kind {
+            EventKind::Remove(_) => "deleted",
+            EventKind::Create(_) | EventKind::Modify(_) => "modified",
+            _ => return, // Skip metadata-only events
+        };
+
+        for path in &event.paths {
+            // Skip hidden files, temp files, OS specials (Python _should_ignore)
+            if should_ignore(path) {
+                continue;
+            }
+
+            // Filter by supported extensions (Python _on_fs_event: path.suffix.lower not in cfg.supported_extensions)
+            let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
+            let ext_match = ext.as_ref().map(|e| {
+                let with_dot = format!(".{}", e);
+                supported_extensions.iter().any(|s| s == &with_dot)
+            }).unwrap_or(false);
+            if !ext_match {
+                continue;
+            }
+
+            // Get relative path from root
+            let rel_path = match path.strip_prefix(root) {
+                Ok(rel) => rel.to_string_lossy().to_string(),
+                Err(_) => {
+                    // Path outside root — ignore
+                    tracing::debug!("Path outside root: {:?}", path);
+                    continue;
+                }
+            };
+
+            // Skip if rel_path is empty (root itself)
+            if rel_path.is_empty() {
+                continue;
+            }
+
+            let abs_path = path.to_string_lossy().to_string();
+
+            // Enqueue: queue handles dedup via UNIQUE rel_path
+            if let Err(e) = queue.enqueue(&rel_path, &abs_path, event_type) {
+                tracing::warn!("Failed to enqueue {}: {}", rel_path, e);
+            } else {
+                tracing::debug!("Enqueued {}: {}", event_type, rel_path);
+            }
+        }
+    }
+
+    /// Get the configured root directory
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Reload config and update watch directory
+    pub fn reload(&mut self) -> Result<(), WatcherError> {
+        self.stop();
+        if let Some(old_watcher) = self.inner.take() {
+            drop(old_watcher);
+        }
+        self.start()
+    }
+}
+
+/// Should this file path be ignored?
+///
+/// Mirrors Python ``watcher._should_ignore()``
+fn should_ignore(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| {
+            n.starts_with('.')
+                || n.starts_with("~$")
+                || n.ends_with(".tmp")
+                || n.ends_with('~')
+                || n.ends_with(".swp")
+                || n == "Thumbs.db"
+                || n == ".DS_Store"
+        })
+        .unwrap_or(false)
+}

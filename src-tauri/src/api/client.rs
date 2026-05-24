@@ -604,7 +604,7 @@ impl Client {
                     detail.unwrap_or_else(|| "Accès refusé".into()),
                 )),
                 code => Err(ApiError::Server(
-                    detail.unwrap_or_else(|| status_str),
+                    detail.unwrap_or(status_str),
                     code,
                 )),
             };
