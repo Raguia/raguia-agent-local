@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 env:
-  WORK_DIR: raguia_local_agent
+  WORK_DIR: ${{ github.repository == 'ValMtp3/raguia-agent-local' && '.' || 'raguia_local_agent' }}
 
 jobs:
   build-windows:
