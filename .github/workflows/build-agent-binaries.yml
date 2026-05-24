@@ -89,6 +89,8 @@ jobs:
   build-macos:
     name: Build macOS arm64 binary
     runs-on: macos-14
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     defaults:
       run:
         working-directory: ${{ env.WORK_DIR }}
@@ -127,7 +129,7 @@ jobs:
         run: pnpm install
 
       - name: Import Apple certificate for code signing
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        if: env.APPLE_CERTIFICATE != ''
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
