@@ -1,0 +1,194 @@
+name: build-agent-binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag de release cible (ex: v0.1.0). Laisser vide pour build-only."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  WORK_DIR: raguia_local_agent
+
+jobs:
+  build-windows:
+    name: Build Windows binary
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORK_DIR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: ${{ env.WORK_DIR }}/pnpm-lock.yaml
+
+      - name: Sync version from release tag
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          jq ".version = \"$VERSION\"" package.json > package.json.tmp && mv package.json.tmp package.json
+          jq ".version = \"$VERSION\"" src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp && mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          sed -i "s/^version = .*/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        run: pnpm tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          VERSION="${RELEASE_TAG:-$(jq -r '.version' package.json)}"
+          MSI="raguia-agent-windows-$VERSION.msi"
+          SIG="raguia-agent-windows-$VERSION.msi.sig"
+          SHA="raguia-agent-windows-$VERSION.msi.sha256"
+
+          cp src-tauri/target/release/bundle/msi/*.msi "$MSI"
+          sha256sum "$MSI" > "$SHA"
+          if [ -f src-tauri/target/release/bundle/msi/*.msi.sig ]; then
+            cp src-tauri/target/release/bundle/msi/*.msi.sig "$SIG"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: |
+            ${{ env.WORK_DIR }}/raguia-agent-windows-*.msi
+            ${{ env.WORK_DIR }}/raguia-agent-windows-*.msi.sha256
+            ${{ env.WORK_DIR }}/raguia-agent-windows-*.msi.sig
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS arm64 binary
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ${{ env.WORK_DIR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-apple-darwin
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: ${{ env.WORK_DIR }}/pnpm-lock.yaml
+
+      - name: Sync version from release tag
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          jq ".version = \"$VERSION\"" package.json > package.json.tmp && mv package.json.tmp package.json
+          jq ".version = \"$VERSION\"" src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp && mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          sed -i "" "s/^version = .*/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        run: pnpm tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+
+      - name: Package artifacts
+        run: |
+          VERSION="${RELEASE_TAG:-$(jq -r '.version' package.json)}"
+          DMG="raguia-agent-macos-$VERSION.dmg"
+          SIG="raguia-agent-macos-$VERSION.dmg.sig"
+          SHA="raguia-agent-macos-$VERSION.dmg.sha256"
+
+          cp src-tauri/target/release/bundle/dmg/*.dmg "$DMG"
+          shasum -a 256 "$DMG" > "$SHA"
+          if ls src-tauri/target/release/bundle/dmg/*.dmg.sig 2>/dev/null; then
+            cp src-tauri/target/release/bundle/dmg/*.dmg.sig "$SIG"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-assets
+          path: |
+            ${{ env.WORK_DIR }}/raguia-agent-macos-*.dmg
+            ${{ env.WORK_DIR }}/raguia-agent-macos-*.dmg.sha256
+            ${{ env.WORK_DIR }}/raguia-agent-macos-*.dmg.sig
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release assets
+    if: ${{ github.event_name == 'push' || github.event.inputs.release_tag != '' }}
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release-assets/*.msi
+            release-assets/*.msi.sha256
+            release-assets/*.msi.sig
+            release-assets/*.dmg
+            release-assets/*.dmg.sha256
+            release-assets/*.dmg.sig
