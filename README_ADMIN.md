@@ -1,215 +1,134 @@
-# Guide d'administration — Agent Local Raguia
+# Guide d'administration — Agent Local Raguia (Tauri)
 
-Ce document est destiné aux administrateurs techniques qui déploient, configurent et maintiennent l'agent chez un client.
-
----
-
-## 1. Architecture de distribution
-
-L'agent est distribué sous forme de **binaires natifs compilés par PyInstaller** (aucune dépendance Python, Git ou uv requise côté client). Le client télécharge un seul fichier et double-clique.
-
-| Plateforme | Artefact | Taille indicative |
-|---|---|---|
-| Windows 10/11 x64 | `raguia-agent-windows.exe` | ~60-80 Mo |
-| macOS Apple Silicon (M1/M2/M3) | `raguia-agent-macos-arm64.zip` | ~70-90 Mo |
-
-Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.github/workflows/build-agent-binaries.yml`.
+Ce document est destiné aux administrateurs qui déploient, configurent et maintiennent l'agent chez un client.
 
 ---
 
-## 2. Déploiement chez un client
+## 1. Architecture
 
-### 2.1 Prérequis
+L'agent est une application native **Rust/Tauri 2** (plus de Python). Compilé en binaire natif via `pnpm tauri build`, distribué en `.msi` (Windows) et `.dmg` (macOS).
 
-- Connexion internet (HTTPS vers le portail Raguia).
-- Identifiants portail client (slug + mot de passe) pour la connexion initiale de l'agent.
-- Aucun autre prérequis logiciel.
+| Plateforme | Artefact |
+|---|---|
+| Windows 10/11 x64 | `Raguia-Agent.msi` |
+| macOS Apple Silicon | `Raguia-Agent.dmg` |
 
-### 2.2 Procédure (Windows)
-
-1. Transmettre le lien de téléchargement `raguia-agent-windows.exe` au client (ou le déposer vous-même sur la machine).
-2. Double-clic sur le `.exe`.
-3. **Si SmartScreen s'affiche** ("Windows a protégé votre ordinateur") :
-   - Cliquer **Informations supplémentaires** → **Exécuter quand même**.
-   - Ce message est normal pour un exécutable sans signature Authenticode grand public. Il disparaîtra si vous investissez dans un certificat de signature de code (~100 €/an).
-4. L'assistant de configuration s'ouvre. Saisir l'URL du portail, le slug client, le mot de passe portail, puis choisir le dossier parent.
-5. Cliquer **Tester** → **Enregistrer & Démarrer**.
-
-L'agent s'inscrit automatiquement dans `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pour démarrer à chaque connexion de l'utilisateur (sans droits administrateur). Un ancien mode compatibilité via raccourci `Startup` peut aussi exister sur certains postes.
-
-### 2.3 Procédure (macOS Apple Silicon)
-
-1. Transmettre le `.zip` au client.
-2. Dézipper → faire glisser `raguia-agent.app` dans le dossier `Applications` (recommandé) ou `Documents`.
-3. **Gatekeeper bloque le premier lancement** car l'app n'est pas notarisée. Deux options :
-   - **Option utilisateur** : Clic droit sur l'app → **Ouvrir** → **Ouvrir** dans le dialogue d'alerte.
-   - **Option IT (recommandée)** : Exécuter en terminal une seule fois avant de remettre la main au client :
-     ```bash
-     xattr -d com.apple.quarantine /Applications/raguia-agent.app
-     ```
-   Après ce retrait du flag de quarantaine, l'app s'ouvre normalement par double-clic.
-4. L'assistant s'ouvre. Saisir l'URL du portail, le slug client, le mot de passe portail, puis choisir le dossier parent.
-5. **Enregistrer & Démarrer**.
-
-L'agent crée automatiquement un LaunchAgent dans `~/Library/LaunchAgents/com.raguia.local.agent.plist` pour démarrer au login de l'utilisateur.
+Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.github/workflows/build_binaries.yml`.
 
 ---
 
-## 3. Publication d'une release (côté vous)
+## 2. Déploiement
+
+### 2.1 Procédure (Windows)
+
+1. Transmettre le `.msi` au client.
+2. Double-clic → Assistant d'installation Windows.
+3. L'assistant de configuration s'ouvre au premier lancement. Saisir URL, slug, mot de passe, dossier parent.
+4. L'agent se configure automatiquement au démarrage du système.
+
+### 2.2 Procédure (macOS)
+
+1. Transmettre le `.dmg` au client.
+2. Glisser `Raguia Agent.app` dans le dossier `Applications`.
+3. Premier lancement → l'assistant de configuration s'ouvre automatiquement.
+4. L'agent se configure automatiquement au démarrage du système.
+
+### 2.3 Déploiement MDM/GPO
+
+L'agent supporte l'installation silencieuse via les outils MDM. L'auto-start est géré via `tauri-plugin-autostart` (LaunchAgent macOS / Run registry Windows).
+
+---
+
+## 3. Configuration
+
+La configuration est stockée via `tauri-plugin-store` (chiffré via le trousseau OS : Keychain macOS, Credential Manager Windows).
+
+Le wizard de configuration (HTML natif intégré) recueille les identifiants et persiste les données au premier lancement.
+
+Fichiers stockés dans `~/Library/Application Support/com.raguia.agent/` (macOS) ou `%APPDATA%/com.raguia.agent/` (Windows) :
+- `raguia-config.json` — configuration applicative (chiffré)
+- `sync_queue.sqlite` — file d'attente des fichiers à synchroniser
+
+---
+
+## 4. Mises à jour
+
+L'agent utilise `tauri-plugin-updater` pour les mises à jour automatiques. Le processus est signé cryptographiquement :
+
+1. Publication d'une release GitHub avec les artefacts signés
+2. Configuration de l'URL de l'endpoint de mise à jour dans `tauri.conf.json`
+3. L'agent vérifie périodiquement les nouvelles versions
+4. Téléchargement et installation atomique (swap du binaire)
+
+---
+
+## 5. Signature des binaires
+
+### macOS
+
+La signature Apple est configurée via les secrets GitHub :
+- `APPLE_SIGNING_IDENTITY`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_PASSWORD`
+
+Les builds CI signent et notarisent automatiquement le `.dmg` quand ces secrets sont présents.
+
+### Windows
+
+La signature du `.msi` utilise `TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (clé de signature Tauri).
+
+---
+
+## 6. Publication d'une release
 
 ```bash
-# Tagger la release (déclenche le build CI automatiquement)
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-Le CI produit les artefacts et crée une GitHub Release.  
-L'agent compare sa version locale (`X.Y.Z`) au dernier tag release (`vX.Y.Z`) et télécharge le binaire + son `.sha256` depuis GitHub.
+Le CI build les binaires (Windows + macOS), les signe, et crée une GitHub Release avec les artefacts.
 
 ---
 
-## 4. Configuration
+## 7. Dépannage
 
-### 4.1 Fichier de configuration
+### Logs
 
-La configuration est stockée dans `~/.raguia/config.yaml` (créé par le wizard) :
+Les logs sont visibles dans la console (stderr) ou via `RUST_LOG=raguia_agent=debug` pour le mode verbose.
 
-```yaml
-api_base: "https://raguia.monentreprise.com"
-client_slug: "entreprise-demo"
-agent_token: __RAGUIA_KEYRING__  # session stockee dans le trousseau OS
-watch_parent: "/Users/prenom/Documents"
-root_folder_name: "RAGUIA"
-secure_token_storage: true          # recommande : stocke la session dans le trousseau OS
-structured_logging: true            # logs JSON (recommande en prod)
-auto_update: true
-auto_update_check_hours: 24.0
-```
+Fichiers de données : `~/Library/Application Support/com.raguia.agent/raguia-agent/` (macOS) ou `%APPDATA%/com.raguia.agent/raguia-agent/` (Windows).
 
-> **Important** : le champ `agent_token` est genere automatiquement lors de la connexion initiale (wizard ou « Se connecter / Reconnecter »). Ne pas renseigner ce champ manuellement.
+### Désinstallation
 
-### 4.2 Variable d'environnement (deploiements MDM/GPO)
+- **Windows** : Supprimer via `Programmes et fonctionnalités` → `Raguia Agent`
+- **macOS** : Supprimer `Raguia Agent.app` des Applications
 
-Pour les deploiements sans interface (MDM, GPO), vous pouvez pre-injecter la session via la variable `RAGUIA_AGENT_TOKEN`. Ce mode est deconseille en production : preferez le wizard ou la reconnexion via le menu tray qui gere le renouvellement automatique.
+Les fichiers de configuration ne sont pas automatiquement supprimés (à nettoyer manuellement si nécessaire).
 
-Alternativement, `RAGUIA_CLIENT_SLUG` et un mecanisme de reconnexion automatique peuvent etre utilises.
+### Auto-start
 
-### 4.3 Démarrage sans interface tray (mode serveur)
-
-Pour un déploiement sur un serveur sans affichage :
-```bash
-raguia-agent --no-tray
-```
-L'agent tourne en mode daemon pur, sans icône.
+Géré par `tauri-plugin-autostart` :
+- **Windows** : clé Registre `HKCU\...\Run\com.raguia.agent`
+- **macOS** : LaunchAgent `~/Library/LaunchAgents/com.raguia.agent.plist`
+- **Linux** : `.config/autostart/com.raguia.agent.desktop`
 
 ---
 
-## 5. Dépannage
+## 8. Développement
 
-### Bascule cachée PROD / DEV depuis le tray
-
-Par défaut, le menu tray **n'affiche pas** de bouton de bascule d'environnement.
-
-Pour l'activer (usage admin uniquement), créer un fichier JSON :
-- soit dans `~/.raguia/<nom-secret>.json`
-- soit dans `assets/<nom-secret>.json` avant packaging PyInstaller
-
-Exemple :
-```json
-{
-  "enable_env_switch": true,
-  "prod_api_base": "https://raguia.valentin-fiess.fr",
-  "dev_api_base": "http://127.0.0.1:8000",
-  "pin": "1234"
-}
-```
-
-Si `pin` est défini, le tray demande ce code avant de basculer.
-
-Le `<nom-secret>.json` peut être piloté par le secret GitHub
-`RAGUIA_ADMIN_SWITCH_FILENAME` au build CI. Le workflow écrit ce nom dans
-`assets/.raguia-admin-name.txt`, puis l'agent ne cherchera ce JSON qu'avec ce
-nom précis.
-
-Sans secret CI, le fallback reste `.raguia-admin.json` (compatibilité locale).
-
-### L'agent ne se lance pas au démarrage
-
-- **Windows** : Vérifier d'abord `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → clé `Raguia Agent`. Sur certains anciens postes, vérifier aussi `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Raguia Agent.lnk`.
-- **macOS** : Vérifier `~/Library/LaunchAgents/com.raguia.local.agent.plist`. Si absent, relancer l'agent manuellement une fois. Pour le recharger sans redémarrer :
-  ```bash
-  launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
-  ```
-
-### Erreur 401 / Session expiree
-
-Menu tray → **Se connecter / Reconnecter…** puis saisir `slug + mot de passe portail`.
-
-L'agent tente un renouvellement silencieux avant expiration. Si ce renouvellement echoue, une reconnexion est demandee via le menu de l'icone.
-
-### Désactiver le démarrage automatique sans désinstaller
-
-- **Windows** : Supprimer la clé de registre `Raguia Agent` dans `HKCU\...\Run`, et supprimer aussi (si présent) `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Raguia Agent.lnk`.
-- **macOS** :
-  ```bash
-  launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
-  ```
-
-### Désinstallation complète
-
-Menu tray → **Désinstaller l'agent**. Cette action :
-- Arrête l'agent.
-- Supprime l'entrée de démarrage automatique (registre Windows ou LaunchAgent macOS).
-- Supprime `~/.raguia/` (config, logs, états).
-- **Ne supprime pas** le dossier `RAGUIA` contenant les documents du client.
-
-Pour une désinstallation manuelle (si le tray n'est plus accessible) :
-```bash
-# macOS
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.raguia.local.agent.plist
-rm -rf ~/Library/LaunchAgents/com.raguia.local.agent.plist ~/.raguia
-```
-```powershell
-# Windows PowerShell
-Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Raguia Agent" -ErrorAction SilentlyContinue
-Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Raguia Agent.lnk" -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force "$env:USERPROFILE\.raguia"
-```
-
-### Exporter les logs pour le support
-
-Menu tray → **Exporter un bundle support** → transmettre le ZIP généré dans `~/.raguia/`.
-
-Les logs bruts se trouvent dans `~/.raguia/agent.log` (et `agent.log.1`, `agent.log.2`, etc. pour la rotation).
-
----
-
-## 6. Sécurité de la chaîne de mise à jour
-
-L'agent refuse toute mise à jour si :
-1. L'URL de téléchargement n'est pas en **HTTPS**.
-2. La chaîne de redirection contient un hôte non approuvé.
-3. L'empreinte **SHA256** du binaire téléchargé ne correspond pas à celle du fichier `.sha256` de la release GitHub.
-
----
-
-## 7. Workflow développement (usage interne uniquement)
-
-Les scripts `install.sh` / `install.bat` et `update.sh` / `update.bat` restent présents dans le dépôt pour le **workflow de développement local**. Ils ne sont plus distribués aux clients.
-
-Pour travailler sur l'agent en local :
 ```bash
 cd raguia_local_agent
-uv venv .venv --python 3.11
-source .venv/bin/activate   # ou .venv\Scripts\activate.bat sur Windows
-uv pip install -e ".[full]"
-python -m raguia_local_agent
-```
 
-Pour builder un binaire en local (test du spec PyInstaller) :
-```bash
-cd raguia_local_agent
-pip install pyinstaller
-pyinstaller raguia_agent.spec
-# → dist/raguia-agent.exe (Windows) ou dist/raguia-agent.app (macOS)
+pnpm install
+
+# Développement avec rechargement à chaud
+pnpm tauri dev
+
+# Build release
+pnpm tauri build
+
+# Lints
+cargo clippy -- -D warnings
+cargo fmt
+
+# Tests
+cargo test
 ```

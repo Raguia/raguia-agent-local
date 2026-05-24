@@ -1,29 +1,17 @@
-# Environnements Python
+# Node dependencies
+node_modules/
+
+# Tauri build output
+src-tauri/gen/
+src-tauri/target/
+
+# Python (ancien agent — plus utilisé)
 .venv/
-venv/
+.raguia_agent/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-*.egg-info/
-dist/
-build/
-*.egg
 
-# Dossier .raguia_agent : scripts versionnés ; exclus : venv + config secrète
-.raguia_agent/venv/
-.raguia_agent/raguia_agent.yaml
-
-# Racine du projet (copie locale éventuelle)
-raguia_agent.yaml
-
-# Données de l'agent (état local, queue, logs)
-*.log
-raguia_state.json
-raguia_queue.json
-.raguia/
-
-# OS
+# Editor files
 .DS_Store
-Thumbs.db
-desktop.ini
+*.swp
+*.swo
