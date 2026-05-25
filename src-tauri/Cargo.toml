@@ -1,6 +1,6 @@
 [package]
 name = "raguia-agent"
-version = "0.1.10"
+version = "0.1.11"
 description = "Raguia Desktop Sync Agent"
 authors = ["Raguia"]
 edition = "2021"
