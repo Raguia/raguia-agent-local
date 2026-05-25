@@ -247,9 +247,14 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         "open" => {
             tracing::info!("Open Raguia requested");
             if let Some(state) = app.try_state::<AppState>() {
-                let cfg = state.config_manager.load_config().ok();
-                if let Some(url) = cfg.map(|c| c.api_url) {
-                    let _ = open::that(&url);
+                if let Ok(cfg) = state.config_manager.load_config() {
+                    let slug = &cfg.client_slug;
+                    let portal_url = if slug.is_empty() {
+                        cfg.api_url
+                    } else {
+                        format!("{}/portal/{}", cfg.api_url.trim_end_matches('/'), slug)
+                    };
+                    let _ = open::that(&portal_url);
                 }
             }
         }
@@ -286,7 +291,7 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 /// Handle tray icon click events
-fn handle_tray_icon_event(tray: &TrayIcon<tauri::Wry>, event: TrayIconEvent) {
+fn handle_tray_icon_event(_tray: &TrayIcon<tauri::Wry>, event: TrayIconEvent) {
     if let TrayIconEvent::Click {
         button: MouseButton::Left,
         button_state: MouseButtonState::Up,
@@ -294,9 +299,6 @@ fn handle_tray_icon_event(tray: &TrayIcon<tauri::Wry>, event: TrayIconEvent) {
     } = event
     {
         tracing::debug!("Tray icon left-clicked");
-        if let Err(e) = tray.set_tooltip(Some("Raguia Agent — clic droit pour le menu")) {
-            tracing::warn!("Failed to update tooltip: {}", e);
-        }
     }
 }
 
@@ -419,8 +421,8 @@ pub fn run() {
                 }
             }
 
-            // Hide tray menu on left-click (maps to right-click menu only)
-            let _ = tray.set_show_menu_on_left_click(false);
+            // Show tray menu on left-click (direct access to parameters)
+            let _ = tray.set_show_menu_on_left_click(true);
 
             tracing::info!("Raguia Agent initialized successfully");
             Ok(())

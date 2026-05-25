@@ -30,8 +30,12 @@ Les binaires sont publiés à chaque release GitHub (`v*`) via le workflow `.git
 
 1. Transmettre le `.dmg` au client.
 2. Glisser `Raguia Agent.app` dans le dossier `Applications`.
-3. Premier lancement → l'assistant de configuration s'ouvre automatiquement.
-4. L'agent se configure automatiquement au démarrage du système.
+3. Au premier lancement, si macOS affiche « logiciel potentiellement malveillant » (Gatekeeper — app non signée/notarisée) :
+   - Faire **Clic droit** sur `Raguia Agent.app` → **Ouvrir**
+   - Cliquer **« Ouvrir quand même »**
+   - Ce contournement n'est nécessaire qu'à la première ouverture
+4. L'assistant de configuration s'ouvre automatiquement.
+5. L'agent se configure automatiquement au démarrage du système.
 
 ### 2.3 Déploiement MDM/GPO
 

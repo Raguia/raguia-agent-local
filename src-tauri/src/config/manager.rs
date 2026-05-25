@@ -57,7 +57,7 @@ impl Default for AppConfig {
             watch_parent: dirs_documents().unwrap_or_else(|| PathBuf::from(".")),
             root_folder_name: "RAGUIA".into(),
             poll_interval_secs: 30,
-            stability_secs: 2,
+            stability_secs: 300,
             sync_cooldown_secs: 900,
             burst_threshold: 1,
             max_files_per_cycle: 100,

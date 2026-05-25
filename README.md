@@ -15,7 +15,12 @@ Téléchargez l'installeur depuis votre portail Raguia :
 | macOS | `Raguia-Agent.dmg` |
 | Windows | `Raguia-Agent.msi` |
 
-Double-cliquez et suivez l'assistant. Au premier lancement, une fenêtre s'ouvre automatiquement pour saisir :
+Double-cliquez et suivez l'assistant.
+
+> **⚠️ macOS – « logiciel potentiellement malveillant » ?**
+> Si macOS bloque l'ouverture avec ce message, faites **Clic droit** sur `Raguia Agent.app` → **Ouvrir** (pas double-clic). Une fenêtre propose alors *« Ouvrir quand même »* — cliquez. Cela n'arrive qu'à la première ouverture, et uniquement tant que l'application n'est pas signée/notarisée Apple.
+
+Au premier lancement, une fenêtre s'ouvre automatiquement pour saisir :
 1. **URL du portail** — celle de votre espace Raguia
 2. **Slug client** + **Mot de passe** — vos identifiants portail
 3. **Dossier de travail** — où créer le dossier `RAGUIA`
