@@ -155,7 +155,7 @@ const RETRYABLE_STATUS: &[u16] = &[429, 500, 502, 503, 504];
 pub struct Client {
     config: Arc<config::Manager>,
     inner: reqwest::Client,
-    api_url: String,
+    api_url: RwLock<String>,
     /// Cached auth token (avoids reading encrypted store on every HTTP call)
     cached_token: RwLock<Option<String>>,
 }
@@ -173,10 +173,12 @@ impl Client {
             .build()
             .expect("Failed to create HTTP client");
 
-        let api_url = config
-            .load_config()
-            .map(|c| c.api_url.clone())
-            .unwrap_or_else(|_| "https://raguia.valentin-fiess.fr".into());
+        let api_url = RwLock::new(
+            config
+                .load_config()
+                .map(|c| c.api_url.clone())
+                .unwrap_or_else(|_| "https://raguia.valentin-fiess.fr".into()),
+        );
 
         // Prime token cache from store (avoids reading encrypted JSON on every request)
         let cached_token = RwLock::new(config.get_token());
@@ -190,8 +192,10 @@ impl Client {
     }
 
     /// Update the API base URL (used after reconfiguration)
-    pub fn set_api_url(&mut self, api_url: &str) {
-        self.api_url = api_url.trim_end_matches('/').to_string();
+    pub fn set_api_url(&self, api_url: &str) {
+        if let Ok(mut guard) = self.api_url.write() {
+            *guard = api_url.trim_end_matches('/').to_string();
+        }
     }
 
     /// Update auth token in config store AND in-memory cache (after login or refresh).
@@ -255,7 +259,8 @@ impl Client {
     // ─── URL helper ───────────────────────────────────────────
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.api_url, path)
+        let api_url = self.api_url.read().unwrap_or_else(|e| e.into_inner());
+        format!("{}{}", api_url, path)
     }
 
     // ─── Retry logic ──────────────────────────────────────────

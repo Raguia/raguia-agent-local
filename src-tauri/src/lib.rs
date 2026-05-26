@@ -253,6 +253,13 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, Some("cmd+q"))?;
 
     if is_admin {
+        let endpoint = MenuItem::with_id(
+            app,
+            "endpoint",
+            "Changer l'endpoint",
+            true,
+            None::<&str>,
+        )?;
         let admin = MenuItem::with_id(app, "admin", "Admin", true, None::<&str>)?;
         Menu::with_items(
             app,
@@ -263,6 +270,7 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
                 &open,
                 &check_updates,
                 &about,
+                &endpoint,
                 &separator2,
                 &admin,
                 &quit,
@@ -349,6 +357,107 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                     .title("À propos")
                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                     .show(|_| {});
+            });
+        }
+        "endpoint" => {
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                let current_url = app_clone
+                    .try_state::<AppState>()
+                    .and_then(|s| s.config_manager.load_config().ok())
+                    .map(|c| c.api_url)
+                    .unwrap_or_default();
+
+                let script = format!(
+                    r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#,
+                    current_url
+                );
+                let output = std::process::Command::new("osascript")
+                    .args(["-e", &script])
+                    .output();
+
+                match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        if !stdout.contains("button returned:OK") {
+                            return;
+                        }
+                        let url = stdout
+                            .lines()
+                            .find_map(|l| l.strip_prefix("text returned:"))
+                            .unwrap_or("")
+                            .trim()
+                            .trim_end_matches('/')
+                            .to_string();
+
+                        if url.is_empty()
+                            || (!url.starts_with("http://")
+                                && !url.starts_with("https://"))
+                        {
+                            app_clone
+                                .dialog()
+                                .message("URL invalide. Doit commencer par http:// ou https://")
+                                .title("Erreur")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                .show(|_| {});
+                            return;
+                        }
+
+                        if let Some(state) = app_clone.try_state::<AppState>() {
+                            let mut cfg =
+                                match state.config_manager.load_config() {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        app_clone
+                                            .dialog()
+                                            .message(format!(
+                                                "Erreur config: {}",
+                                                e
+                                            ))
+                                            .title("Erreur")
+                                            .kind(
+                                                tauri_plugin_dialog::MessageDialogKind::Error,
+                                            )
+                                            .show(|_| {});
+                                        return;
+                                    }
+                                };
+                            cfg.api_url = url.clone();
+                            if let Err(e) =
+                                state.config_manager.save_config(&cfg)
+                            {
+                                app_clone
+                                    .dialog()
+                                    .message(format!(
+                                        "Erreur sauvegarde: {}",
+                                        e
+                                    ))
+                                    .title("Erreur")
+                                    .kind(
+                                        tauri_plugin_dialog::MessageDialogKind::Error,
+                                    )
+                                    .show(|_| {});
+                                return;
+                            }
+                            state.api_client.set_api_url(&url);
+                            app_clone
+                                .dialog()
+                                .message(format!(
+                                    "Endpoint changé vers :\n{}",
+                                    url
+                                ))
+                                .title("Succès")
+                                .kind(
+                                    tauri_plugin_dialog::MessageDialogKind::Info,
+                                )
+                                .show(|_| {});
+                            tracing::info!("API endpoint changed to {}", url);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to show endpoint dialog: {}", e);
+                    }
+                }
             });
         }
         "admin" => {
