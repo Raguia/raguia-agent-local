@@ -16,6 +16,9 @@ pub enum UpdateStatus {
 
     /// Update plugin not configured (pubkey/endpoints missing)
     NotConfigured,
+
+    /// Error during update check (network, server, etc.)
+    Error(String),
 }
 
 /// Manages application updates using the Tauri updater plugin.
@@ -71,7 +74,7 @@ impl Updater {
             }
             Err(e) => {
                 tracing::warn!("Update check failed: {}", e);
-                UpdateStatus::NotConfigured
+                UpdateStatus::Error(e.to_string())
             }
         }
     }
@@ -107,7 +110,10 @@ pub async fn check_and_show_dialog(app: &AppHandle) -> String {
             )
         }
         UpdateStatus::NotConfigured => {
-            "Vérification des mises à jour non configurée (clé de signature manquante)".into()
+            "Vérification des mises à jour non configurée (clé de signature manquante)\n\nConfigurez la clé publique et les endpoints dans tauri.conf.json.".into()
+        }
+        UpdateStatus::Error(e) => {
+            format!("Erreur lors de la vérification des mises à jour :\n{}", e)
         }
     }
 }

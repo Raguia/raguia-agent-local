@@ -5,6 +5,9 @@ use tauri::Manager as _;
 use tauri_plugin_store::StoreExt;
 use thiserror::Error;
 
+/// Service name for macOS Keychain entries
+const KEYCHAIN_SERVICE: &str = "com.raguia.agent";
+
 /// Errors for configuration operations
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -17,8 +20,8 @@ pub enum ConfigError {
 
 /// Core application configuration.
 ///
-/// Mirrors the Python ``AgentConfig`` fields. Stored encrypted via ``tauri-plugin-store``
-/// (AES-256-GCM on macOS Keychain / Windows Credential Manager / Linux Secret Service).
+/// Mirrors the Python ``AgentConfig`` fields. Non-sensitive fields stored in
+/// raguia-config.json; secrets (auth_token, agent_password) stored in macOS Keychain.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     /// URL du portail Raguia (ex: https://raguia.valentin-fiess.fr)
@@ -127,9 +130,10 @@ fn dirs_documents() -> Option<PathBuf> {
         .cloned()
 }
 
-/// Manages application configuration and secrets via tauri-plugin-store.
+/// Manages application configuration and secrets.
 ///
-/// Single source of truth for API URL, auth tokens, passwords, and watched paths.
+/// Secrets (auth_token, agent_password) stored in macOS Keychain via `keyring` crate.
+/// Non-sensitive config persisted in raguia-config.json via tauri-plugin-store.
 /// Replaces the fragmented config system from the Python agent (config.yaml + keyring).
 pub struct Manager {
     store_path: PathBuf,
@@ -158,45 +162,106 @@ impl Manager {
             .map_err(|e| ConfigError::Store(e.to_string()))
     }
 
-    // ─── Auth token ───────────────────────────────────────────
+    // ─── Keychain helpers ─────────────────────────────────────
 
-    /// Store the JWT auth token (encrypted at rest by tauri-plugin-store)
+    fn keychain_set(&self, key: &str, value: &str) -> Result<(), ConfigError> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, key)
+            .map_err(|e| ConfigError::Store(format!("Keychain entry: {}", e)))?;
+        entry
+            .set_password(value)
+            .map_err(|e| ConfigError::Store(format!("Keychain set: {}", e)))
+    }
+
+    fn keychain_get(&self, key: &str) -> Option<String> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, key).ok()?;
+        entry.get_password().ok()
+    }
+
+    fn keychain_delete(&self, key: &str) -> Result<(), ConfigError> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, key)
+            .map_err(|e| ConfigError::Store(format!("Keychain entry: {}", e)))?;
+        entry
+            .delete_password()
+            .map_err(|e| ConfigError::Store(format!("Keychain delete: {}", e)))
+    }
+
+    // ─── Auth token (macOS Keychain) ──────────────────────────
+
+    /// Store the JWT auth token in the macOS Keychain
     pub fn set_token(&self, token: &str) -> Result<(), ConfigError> {
-        let store = self.store()?;
-        store.set("auth_token", serde_json::json!(token));
-        store.save().map_err(|e| ConfigError::Store(e.to_string()))
+        self.keychain_set("auth_token", token)?;
+        // Also clear from old store location
+        if let Ok(store) = self.store() {
+            store.delete("auth_token");
+            let _ = store.save();
+        }
+        Ok(())
     }
 
-    /// Retrieve the JWT auth token
+    /// Retrieve the JWT auth token from Keychain (with store fallback)
     pub fn get_token(&self) -> Option<String> {
-        let store = self.store().ok()?;
-        store.get("auth_token")?.as_str().map(String::from)
+        self.keychain_get("auth_token").or_else(|| {
+            // Migration from old store location
+            let token = self
+                .store()
+                .ok()?
+                .get("auth_token")?
+                .as_str()
+                .map(String::from);
+            if let Some(ref t) = token {
+                let _ = self.keychain_set("auth_token", t);
+                if let Ok(store) = self.store() {
+                    store.delete("auth_token");
+                    let _ = store.save();
+                }
+            }
+            token
+        })
     }
 
-    /// Remove the auth token (on logout or token expiry)
+    /// Remove the auth token from Keychain
     pub fn clear_token(&self) -> Result<(), ConfigError> {
+        let _ = self.keychain_delete("auth_token");
         let store = self.store()?;
         store.delete("auth_token");
         store.save().map_err(|e| ConfigError::Store(e.to_string()))
     }
 
-    // ─── Agent password ───────────────────────────────────────
+    // ─── Agent password (macOS Keychain) ──────────────────────
 
-    /// Store the agent password (for auto-reconnect on 401)
+    /// Store the agent password in the macOS Keychain
     pub fn set_password(&self, password: &str) -> Result<(), ConfigError> {
-        let store = self.store()?;
-        store.set("agent_password", serde_json::json!(password));
-        store.save().map_err(|e| ConfigError::Store(e.to_string()))
+        self.keychain_set("agent_password", password)?;
+        if let Ok(store) = self.store() {
+            store.delete("agent_password");
+            let _ = store.save();
+        }
+        Ok(())
     }
 
-    /// Retrieve the stored agent password
+    /// Retrieve the stored agent password from Keychain (with store fallback)
     pub fn get_password(&self) -> Option<String> {
-        let store = self.store().ok()?;
-        store.get("agent_password")?.as_str().map(String::from)
+        self.keychain_get("agent_password").or_else(|| {
+            let pw = self
+                .store()
+                .ok()?
+                .get("agent_password")?
+                .as_str()
+                .map(String::from);
+            if let Some(ref p) = pw {
+                let _ = self.keychain_set("agent_password", p);
+                if let Ok(store) = self.store() {
+                    store.delete("agent_password");
+                    let _ = store.save();
+                }
+            }
+            pw
+        })
     }
 
-    /// Clear the stored password
+    /// Clear the stored password from Keychain
     pub fn clear_password(&self) -> Result<(), ConfigError> {
+        let _ = self.keychain_delete("agent_password");
         let store = self.store()?;
         store.delete("agent_password");
         store.save().map_err(|e| ConfigError::Store(e.to_string()))
@@ -204,11 +269,20 @@ impl Manager {
 
     // ─── Config load / save ──────────────────────────────────
 
-    /// Load the full application configuration from the encrypted store.
+    /// Read _sk directly from the store JSON file to survive store rewrites
+    fn read_sk_from_file(&self) -> Option<bool> {
+        let content = std::fs::read_to_string(&self.store_path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+        json.get("_sk").and_then(|v| v.as_bool())
+    }
+
+    /// Load the full application configuration from the store.
     ///
     /// Falls back to defaults for any missing field (graceful migration).
     pub fn load_config(&self) -> Result<AppConfig, ConfigError> {
         let store = self.store()?;
+        // Force-load from disk so manual edits (_sk, etc.) are picked up
+        let _ = store.reload();
         let defaults = AppConfig::default();
 
         let api_url = store
@@ -273,9 +347,9 @@ impl Manager {
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(defaults.dry_run),
-            admin_mode: store
-                .get("_sk")
-                .and_then(|v| v.as_bool())
+            admin_mode: self
+                .read_sk_from_file()
+                .or_else(|| store.get("_sk").and_then(|v| v.as_bool()))
                 .unwrap_or(defaults.admin_mode),
             supported_extensions,
         })

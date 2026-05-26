@@ -220,6 +220,11 @@ fn show_wizard(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
 
 /// Build the native tray menu
 fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
+    let is_admin = config::Manager::new(app)
+        .load_config()
+        .map(|c| c.admin_mode)
+        .unwrap_or(false);
+
     let sync_now = MenuItem::with_id(
         app,
         "sync_now",
@@ -244,24 +249,40 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
         None::<&str>,
     )?;
     let about = MenuItem::with_id(app, "about", "A propos", true, None::<&str>)?;
-    let admin = MenuItem::with_id(app, "admin", "Admin", true, None::<&str>)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, Some("cmd+q"))?;
 
-    Menu::with_items(
-        app,
-        &[
-            &sync_now,
-            &configure,
-            &separator,
-            &open,
-            &check_updates,
-            &about,
-            &separator2,
-            &admin,
-            &quit,
-        ],
-    )
+    if is_admin {
+        let admin = MenuItem::with_id(app, "admin", "Admin", true, None::<&str>)?;
+        Menu::with_items(
+            app,
+            &[
+                &sync_now,
+                &configure,
+                &separator,
+                &open,
+                &check_updates,
+                &about,
+                &separator2,
+                &admin,
+                &quit,
+            ],
+        )
+    } else {
+        Menu::with_items(
+            app,
+            &[
+                &sync_now,
+                &configure,
+                &separator,
+                &open,
+                &check_updates,
+                &about,
+                &separator2,
+                &quit,
+            ],
+        )
+    }
 }
 
 /// Handle tray menu events
@@ -348,7 +369,7 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 return;
             }
 
-            let logs = LOG_CAPTURE.get_logs(20).join("\n");
+            let logs = LOG_CAPTURE.get_logs(100).join("\n");
             let logs_section = if logs.is_empty() {
                 "Aucun log.".into()
             } else {
