@@ -136,3 +136,49 @@ cargo fmt
 # Tests
 cargo test
 ```
+
+---
+
+## 9. Debug / Mode Admin
+
+L'agent embarque un **mode admin discret** qui permet de visualiser les logs internes, l'état de la file d'attente et un résumé de la configuration depuis le menu tray.
+
+### Activation
+
+Le mode admin est stocké dans le fichier `raguia-config.json` sous une clé anodine :
+
+```json
+{ "_sk": true }
+```
+
+**Méthode 1 — Variable d'environnement** (au lancement) :
+```bash
+RAGUIA_ADMIN=1 ./raguia-agent
+```
+Le flag est persisté dans la config après le premier démarrage.
+
+**Méthode 2 — Manuelle** :
+1. Fermer l'agent
+2. Éditer `raguia-config.json` (dans `~/Library/Application Support/com.raguia.agent/`)
+3. Remplacer `"_sk": false` par `"_sk": true`
+4. Relancer l'agent
+
+**Méthode 3 — Commande Tauri** (via le wizard frontend) :
+```js
+await invoke('toggle_admin_mode')
+```
+
+### Interface
+
+Une fois activé, cliquer sur **Admin** dans le menu tray affiche une boîte de dialogue avec :
+- Les **20 dernières lignes de log** (anneau mémoire de 500 entrées)
+- Les **statistiques de la file d'attente** : en attente, supprimés, synchronisés, bloqués
+- Le **résumé de la config** : URL API, slug, intervalle de poll
+
+### Désactivation
+
+- Relancer sans `RAGUIA_ADMIN=1` puis repasser `"_sk"` à `false` dans le store
+- Ou utiliser `toggle_admin_mode` depuis le wizard
+
+> **Note** : Le nom `"_sk"` dans le store est volontairement discret pour ne pas attirer l'attention d'un utilisateur non-administrateur.
+```
