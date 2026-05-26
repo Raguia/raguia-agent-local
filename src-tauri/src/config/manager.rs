@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use thiserror::Error;
 use tauri::AppHandle;
 use tauri::Manager as _;
 use tauri_plugin_store::StoreExt;
+use thiserror::Error;
 
 /// Errors for configuration operations
 #[derive(Error, Debug)]
@@ -45,6 +45,8 @@ pub struct AppConfig {
     pub auto_update_check_hours: u64,
     /// Mode dry-run (ne pas uploader)
     pub dry_run: bool,
+    #[serde(rename = "_sk")]
+    pub admin_mode: bool,
     /// Extensions de fichiers supportées (en minuscules, avec le point)
     pub supported_extensions: Vec<String>,
 }
@@ -64,9 +66,10 @@ impl Default for AppConfig {
             auto_update: true,
             auto_update_check_hours: 24,
             dry_run: false,
+            admin_mode: false,
             supported_extensions: vec![
-                ".pdf", ".txt", ".md", ".docx", ".doc", ".xlsx", ".xls",
-                ".csv", ".html", ".htm", ".pptx", ".png", ".jpg", ".jpeg", ".webp",
+                ".pdf", ".txt", ".md", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".html", ".htm",
+                ".pptx", ".png", ".jpg", ".jpeg", ".webp",
             ]
             .into_iter()
             .map(String::from)
@@ -102,9 +105,7 @@ impl AppConfig {
             .and_then(|e| e.to_str())
             .map(|e| {
                 let ext = format!(".{}", e.to_lowercase());
-                self.supported_extensions
-                    .iter()
-                    .any(|s| s == &ext)
+                self.supported_extensions.iter().any(|s| s == &ext)
             })
             .unwrap_or(false)
     }
@@ -272,6 +273,10 @@ impl Manager {
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(defaults.dry_run),
+            admin_mode: store
+                .get("_sk")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.admin_mode),
             supported_extensions,
         })
     }
@@ -286,23 +291,20 @@ impl Manager {
             "watch_parent",
             serde_json::json!(config.watch_parent.to_string_lossy().to_string()),
         );
-        store.set("root_folder_name", serde_json::json!(config.root_folder_name));
+        store.set(
+            "root_folder_name",
+            serde_json::json!(config.root_folder_name),
+        );
         store.set(
             "poll_interval_secs",
             serde_json::json!(config.poll_interval_secs),
         );
-        store.set(
-            "stability_secs",
-            serde_json::json!(config.stability_secs),
-        );
+        store.set("stability_secs", serde_json::json!(config.stability_secs));
         store.set(
             "sync_cooldown_secs",
             serde_json::json!(config.sync_cooldown_secs),
         );
-        store.set(
-            "burst_threshold",
-            serde_json::json!(config.burst_threshold),
-        );
+        store.set("burst_threshold", serde_json::json!(config.burst_threshold));
         store.set(
             "max_files_per_cycle",
             serde_json::json!(config.max_files_per_cycle),
@@ -313,10 +315,10 @@ impl Manager {
             serde_json::json!(config.auto_update_check_hours),
         );
         store.set("dry_run", serde_json::json!(config.dry_run));
+        store.set("_sk", serde_json::json!(config.admin_mode));
         store.set(
             "supported_extensions",
-            serde_json::to_value(&config.supported_extensions)
-                .unwrap_or_default(),
+            serde_json::to_value(&config.supported_extensions).unwrap_or_default(),
         );
 
         store.save().map_err(|e| ConfigError::Store(e.to_string()))

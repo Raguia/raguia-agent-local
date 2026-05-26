@@ -7,12 +7,13 @@
 mod api;
 mod config;
 mod engine;
+mod log_capture;
 mod queue;
 mod updater;
 mod watcher;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -168,6 +169,39 @@ pub fn set_tray_icon(app: &tauri::AppHandle, status: &str) {
     }
 }
 
+/// Tauri command: get recent logs for admin debug
+#[tauri::command]
+fn get_logs(count: Option<usize>) -> Vec<String> {
+    LOG_CAPTURE.get_logs(count.unwrap_or(50))
+}
+
+/// Tauri command: toggle admin mode
+#[tauri::command]
+fn toggle_admin_mode(app: tauri::AppHandle) -> Result<bool, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| String::from("AppState non initialise"))?;
+    let mut cfg = state
+        .config_manager
+        .load_config()
+        .map_err(|e| e.to_string())?;
+    cfg.admin_mode = !cfg.admin_mode;
+    state
+        .config_manager
+        .save_config(&cfg)
+        .map_err(|e| e.to_string())?;
+    Ok(cfg.admin_mode)
+}
+
+/// Tauri command: check if admin mode is enabled
+#[tauri::command]
+fn is_admin_mode(app: tauri::AppHandle) -> bool {
+    app.try_state::<AppState>()
+        .and_then(|s| s.config_manager.load_config().ok())
+        .map(|c| c.admin_mode)
+        .unwrap_or(false)
+}
+
 /// Open the configuration wizard window.
 fn show_wizard(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let window = WebviewWindowBuilder::new(app, "wizard", WebviewUrl::App("index.html".into()))
@@ -205,19 +239,29 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
-        "Vérifier les mises à jour",
+        "Verifier les mises a jour",
         true,
         None::<&str>,
     )?;
-    let about = MenuItem::with_id(app, "about", "À propos", true, None::<&str>)?;
+    let about = MenuItem::with_id(app, "about", "A propos", true, None::<&str>)?;
+    let admin = MenuItem::with_id(app, "admin", "Admin", true, None::<&str>)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, Some("cmd+q"))?;
 
-    let menu = Menu::with_items(
+    Menu::with_items(
         app,
-        &[&sync_now, &configure, &separator, &open, &check_updates, &about, &separator2, &quit],
-    )?;
-    Ok(menu)
+        &[
+            &sync_now,
+            &configure,
+            &separator,
+            &open,
+            &check_updates,
+            &about,
+            &separator2,
+            &admin,
+            &quit,
+        ],
+    )
 }
 
 /// Handle tray menu events
@@ -286,6 +330,63 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                     .show(|_| {});
             });
         }
+        "admin" => {
+            let is_admin = app
+                .try_state::<AppState>()
+                .and_then(|s| s.config_manager.load_config().ok())
+                .map(|c| c.admin_mode)
+                .unwrap_or(false);
+
+            if !is_admin {
+                app.dialog()
+                    .message(
+                        "Mode admin verrouille.\n\nContactez l'administrateur pour activer le mode debug.",
+                    )
+                    .title("Admin")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(move |_| {});
+                return;
+            }
+
+            let logs = LOG_CAPTURE.get_logs(20).join("\n");
+            let logs_section = if logs.is_empty() {
+                "Aucun log.".into()
+            } else {
+                logs
+            };
+
+            let queue_section = app
+                .try_state::<AppState>()
+                .and_then(|s| {
+                    let stats = s.queue_store.get_stats().ok()?;
+                    let stuck = s.queue_store.stuck_count().unwrap_or(0);
+                    Some(format!(
+                        "Attente:{}  Suppr:{}  Sync:{}  Bloque:{}",
+                        stats.pending, stats.pending_delete, stats.synced, stuck
+                    ))
+                })
+                .unwrap_or_else(|| "File: N/A".into());
+
+            let config_section = app
+                .try_state::<AppState>()
+                .and_then(|s| s.config_manager.load_config().ok())
+                .map(|c| format!("API:{}  Slug:{}  Poll:{}s", c.api_url, c.client_slug, c.poll_interval_secs))
+                .unwrap_or_else(|| "Config: N/A".into());
+
+            let msg = format!(
+                "=== MODE ADMIN ===\n\n--- LOGS ---\n{}\n\n--- FILE ---\n{}\n\n--- CONFIG ---\n{}\n\n[Desactiver: utiliser la commande `toggle_admin_mode`]",
+                logs_section, queue_section, config_section,
+            );
+
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                app_clone.dialog()
+                    .message(&msg)
+                    .title("Admin Panel")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
+            });
+        }
         _ => {}
     }
 }
@@ -303,9 +404,14 @@ fn handle_tray_icon_event(_tray: &TrayIcon<tauri::Wry>, event: TrayIconEvent) {
 }
 
 /// Run the Raguia Agent application
+static LOG_CAPTURE: LazyLock<log_capture::LogCapture> =
+    LazyLock::new(log_capture::LogCapture::new);
+
 pub fn run() {
-    // Initialize structured logging
+    let log_capture = LOG_CAPTURE.clone();
     tracing_subscriber::fmt()
+        .with_writer(log_capture)
+        .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "raguia_agent=info,tower_http=warn".into()),
@@ -324,6 +430,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .setup(|app| {
+            // ── Initialize core services ──
+            let config_manager = Arc::new(config::Manager::new(app.handle()));
+
+            // ── Force admin mode from env ──
+            if std::env::var("RAGUIA_ADMIN").as_deref() == Ok("1") {
+                let mut cfg = config_manager.load_config().unwrap_or_default();
+                cfg.admin_mode = true;
+                let _ = config_manager.save_config(&cfg);
+                tracing::info!("Admin mode enabled via RAGUIA_ADMIN=1");
+            }
+
             // ── Build tray menu ──
             let menu = build_tray_menu(app.handle())?;
             let tray = TrayIconBuilder::new()
@@ -332,9 +449,6 @@ pub fn run() {
                 .on_menu_event(handle_tray_event)
                 .on_tray_icon_event(handle_tray_icon_event)
                 .build(app)?;
-
-            // ── Initialize core services ──
-            let config_manager = Arc::new(config::Manager::new(app.handle()));
             let api_client = Arc::new(api::Client::new(config_manager.clone()));
 
             let db_dir = {
@@ -433,6 +547,9 @@ pub fn run() {
             sync_now,
             login,
             get_home_dir,
+            get_logs,
+            toggle_admin_mode,
+            is_admin_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Raguia Agent");
