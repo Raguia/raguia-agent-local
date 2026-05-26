@@ -155,6 +155,11 @@ impl Manager {
         }
     }
 
+    /// Path to the config store file (for display/debug)
+    pub fn store_path(&self) -> &std::path::Path {
+        &self.store_path
+    }
+
     /// Access the underlying store
     fn store(&self) -> Result<std::sync::Arc<tauri_plugin_store::Store<tauri::Wry>>, ConfigError> {
         self.app_handle

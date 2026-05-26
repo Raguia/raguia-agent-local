@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
@@ -225,71 +225,66 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
         .map(|c| c.admin_mode)
         .unwrap_or(false);
 
-    let sync_now = MenuItem::with_id(
-        app,
-        "sync_now",
-        "Synchroniser maintenant",
-        true,
-        None::<&str>,
-    )?;
-    let configure = MenuItem::with_id(
-        app,
-        "configure",
-        "Se connecter / Reconnecter",
-        true,
-        None::<&str>,
-    )?;
+    let sync_now = MenuItem::with_id(app, "sync_now", "Synchroniser maintenant", true, None::<&str>)?;
+    let configure = MenuItem::with_id(app, "configure", "Se connecter / Reconnecter", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let open = MenuItem::with_id(app, "open", "Ouvrir Raguia", true, None::<&str>)?;
-    let check_updates = MenuItem::with_id(
-        app,
-        "check_updates",
-        "Verifier les mises a jour",
-        true,
-        None::<&str>,
-    )?;
+    let check_updates = MenuItem::with_id(app, "check_updates", "Verifier les mises a jour", true, None::<&str>)?;
     let about = MenuItem::with_id(app, "about", "A propos", true, None::<&str>)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, Some("cmd+q"))?;
 
     if is_admin {
-        let endpoint = MenuItem::with_id(
-            app,
-            "endpoint",
-            "Changer l'endpoint",
-            true,
-            None::<&str>,
-        )?;
-        let admin = MenuItem::with_id(app, "admin", "Admin", true, None::<&str>)?;
-        Menu::with_items(
-            app,
-            &[
-                &sync_now,
-                &configure,
-                &separator,
-                &open,
-                &check_updates,
-                &about,
-                &endpoint,
-                &separator2,
-                &admin,
-                &quit,
-            ],
-        )
+        let admin_info = MenuItem::with_id(app, "admin_info", "Info Admin", true, None::<&str>)?;
+        let sep_a1 = PredefinedMenuItem::separator(app)?;
+        let dry_run = MenuItem::with_id(app, "dry_run", "Dry-Run: ON/OFF", true, None::<&str>)?;
+        let toggle_autostart = MenuItem::with_id(app, "toggle_autostart", "Autostart: ON/OFF", true, None::<&str>)?;
+        let sep_a2 = PredefinedMenuItem::separator(app)?;
+        let endpoint = MenuItem::with_id(app, "endpoint", "Changer l'endpoint", true, None::<&str>)?;
+        let reload_config = MenuItem::with_id(app, "reload_config", "Recharger config", true, None::<&str>)?;
+        let test_api = MenuItem::with_id(app, "test_api", "Tester API", true, None::<&str>)?;
+        let export_logs = MenuItem::with_id(app, "export_logs", "Exporter logs", true, None::<&str>)?;
+        let sep_a3 = PredefinedMenuItem::separator(app)?;
+        let config_path = MenuItem::with_id(app, "config_path", "Chemin config", true, None::<&str>)?;
+        let show_queue = MenuItem::with_id(app, "show_queue", "File d'attente", true, None::<&str>)?;
+
+        let admin_submenu = Submenu::with_items(app, "Admin", true, &[
+            &admin_info,
+            &sep_a1,
+            &dry_run,
+            &toggle_autostart,
+            &sep_a2,
+            &endpoint,
+            &reload_config,
+            &test_api,
+            &export_logs,
+            &sep_a3,
+            &config_path,
+            &show_queue,
+        ])?;
+
+        Menu::with_items(app, &[
+            &sync_now,
+            &configure,
+            &separator,
+            &open,
+            &check_updates,
+            &about,
+            &admin_submenu,
+            &separator2,
+            &quit,
+        ])
     } else {
-        Menu::with_items(
-            app,
-            &[
-                &sync_now,
-                &configure,
-                &separator,
-                &open,
-                &check_updates,
-                &about,
-                &separator2,
-                &quit,
-            ],
-        )
+        Menu::with_items(app, &[
+            &sync_now,
+            &configure,
+            &separator,
+            &open,
+            &check_updates,
+            &about,
+            &separator2,
+            &quit,
+        ])
     }
 }
 
@@ -312,13 +307,11 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             }
         }
         "configure" => {
-            tracing::info!("Open configuration requested");
             if let Err(e) = show_wizard(app) {
                 tracing::error!("Failed to open configuration wizard: {}", e);
             }
         }
         "open" => {
-            tracing::info!("Open Raguia requested");
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(cfg) = state.config_manager.load_config() {
                     let slug = &cfg.client_slug;
@@ -332,7 +325,6 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             }
         }
         "check_updates" => {
-            tracing::info!("Update check requested");
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
                 let msg = crate::updater::check_and_show_dialog(&app_clone).await;
@@ -344,178 +336,176 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             });
         }
         "about" => {
-            tracing::info!("About requested");
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
                 let version = env!("CARGO_PKG_VERSION");
-                let msg = format!(
-                    "Raguia Agent v{}\n\nAgent de synchronisation de bureau\npour la plateforme Raguia.\n\n© Raguia",
-                    version
-                );
+                let msg = format!("Raguia Agent v{}\n\nAgent de synchronisation de bureau\npour la plateforme Raguia.\n\n© Raguia", version);
                 app_clone.dialog()
-                    .message(msg)
-                    .title("À propos")
+                    .message(msg).title("À propos")
                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                     .show(|_| {});
             });
         }
+
+        // ── Admin submenu items ──────────────────────────────
+
+        "admin_info" => {
+            let logs = LOG_CAPTURE.get_logs(100).join("\n");
+            let logs_section = if logs.is_empty() { "Aucun log.".into() } else { logs };
+            let queue_section = app.try_state::<AppState>()
+                .and_then(|s| {
+                    let stats = s.queue_store.get_stats().ok()?;
+                    let stuck = s.queue_store.stuck_count().unwrap_or(0);
+                    Some(format!("Attente:{}  Suppr:{}  Sync:{}  Bloque:{}", stats.pending, stats.pending_delete, stats.synced, stuck))
+                })
+                .unwrap_or_else(|| "File: N/A".into());
+            let config_section = app.try_state::<AppState>()
+                .and_then(|s| s.config_manager.load_config().ok())
+                .map(|c| format!("API:{}  Slug:{}  Poll:{}s  Dry:{}", c.api_url, c.client_slug, c.poll_interval_secs, c.dry_run))
+                .unwrap_or_else(|| "Config: N/A".into());
+            let msg = format!("=== MODE ADMIN ===\n\n--- LOGS ---\n{}\n\n--- FILE ---\n{}\n\n--- CONFIG ---\n{}", logs_section, queue_section, config_section);
+            let a = app.clone();
+            tauri::async_runtime::spawn(async move {
+                a.dialog().message(&msg).title("Admin Panel").kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+            });
+        }
+        "dry_run" => {
+            if let Some(state) = app.try_state::<AppState>() {
+                let mut cfg = state.config_manager.load_config().unwrap_or_default();
+                cfg.dry_run = !cfg.dry_run;
+                let msg = match state.config_manager.save_config(&cfg) {
+                    Ok(_) => format!("Dry-Run: {}", if cfg.dry_run { "ACTIVÉ" } else { "DÉSACTIVÉ" }),
+                    Err(e) => format!("Erreur: {}", e),
+                };
+                let a = app.clone();
+                a.dialog().message(&msg).title("Dry-Run")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
+                tracing::info!("Dry-Run toggled to {}", cfg.dry_run);
+            }
+        }
+        "toggle_autostart" => {
+            let a = app.clone();
+            let enabled = a.autolaunch().is_enabled().unwrap_or(false);
+            let result = if enabled { a.autolaunch().disable() } else { a.autolaunch().enable() };
+            let msg = match result {
+                Ok(_) => format!("Autostart: {}", if !enabled { "ACTIVÉ" } else { "DÉSACTIVÉ" }),
+                Err(e) => format!("Erreur: {}", e),
+            };
+            a.dialog().message(&msg).title("Autostart")
+                .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                .show(|_| {});
+            tracing::info!("Autostart toggled (was enabled={})", enabled);
+        }
         "endpoint" => {
-            let app_clone = app.clone();
+            let ac = app.clone();
             std::thread::spawn(move || {
-                let current_url = app_clone
-                    .try_state::<AppState>()
+                let current = ac.try_state::<AppState>()
                     .and_then(|s| s.config_manager.load_config().ok())
-                    .map(|c| c.api_url)
-                    .unwrap_or_default();
-
-                let script = format!(
-                    r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#,
-                    current_url
-                );
-                let output = std::process::Command::new("osascript")
-                    .args(["-e", &script])
-                    .output();
-
-                match output {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout);
-                        if !stdout.contains("button returned:OK") {
-                            return;
+                    .map(|c| c.api_url).unwrap_or_default();
+                let script = format!(r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#, current);
+                let out = std::process::Command::new("osascript").args(["-e", &script]).output();
+                match out {
+                    Ok(o) => {
+                        let s = String::from_utf8_lossy(&o.stdout);
+                        if !s.contains("button returned:OK") { return; }
+                        let url = s.lines().find_map(|l| l.strip_prefix("text returned:")).unwrap_or("").trim().trim_end_matches('/').to_string();
+                        if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
+                            ac.dialog().message("URL invalide. Doit commencer par http:// ou https://").title("Erreur")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
                         }
-                        let url = stdout
-                            .lines()
-                            .find_map(|l| l.strip_prefix("text returned:"))
-                            .unwrap_or("")
-                            .trim()
-                            .trim_end_matches('/')
-                            .to_string();
-
-                        if url.is_empty()
-                            || (!url.starts_with("http://")
-                                && !url.starts_with("https://"))
-                        {
-                            app_clone
-                                .dialog()
-                                .message("URL invalide. Doit commencer par http:// ou https://")
-                                .title("Erreur")
-                                .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                                .show(|_| {});
-                            return;
-                        }
-
-                        if let Some(state) = app_clone.try_state::<AppState>() {
-                            let mut cfg =
-                                match state.config_manager.load_config() {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        app_clone
-                                            .dialog()
-                                            .message(format!(
-                                                "Erreur config: {}",
-                                                e
-                                            ))
-                                            .title("Erreur")
-                                            .kind(
-                                                tauri_plugin_dialog::MessageDialogKind::Error,
-                                            )
-                                            .show(|_| {});
-                                        return;
-                                    }
-                                };
+                        if let Some(st) = ac.try_state::<AppState>() {
+                            let mut cfg = match st.config_manager.load_config() {
+                                Ok(c) => c, Err(e) => {
+                                    ac.dialog().message(format!("Erreur config: {}", e)).title("Erreur")
+                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
+                                }
+                            };
                             cfg.api_url = url.clone();
-                            if let Err(e) =
-                                state.config_manager.save_config(&cfg)
-                            {
-                                app_clone
-                                    .dialog()
-                                    .message(format!(
-                                        "Erreur sauvegarde: {}",
-                                        e
-                                    ))
-                                    .title("Erreur")
-                                    .kind(
-                                        tauri_plugin_dialog::MessageDialogKind::Error,
-                                    )
-                                    .show(|_| {});
-                                return;
+                            if let Err(e) = st.config_manager.save_config(&cfg) {
+                                ac.dialog().message(format!("Erreur sauvegarde: {}", e)).title("Erreur")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
                             }
-                            state.api_client.set_api_url(&url);
-                            app_clone
-                                .dialog()
-                                .message(format!(
-                                    "Endpoint changé vers :\n{}",
-                                    url
-                                ))
-                                .title("Succès")
-                                .kind(
-                                    tauri_plugin_dialog::MessageDialogKind::Info,
-                                )
-                                .show(|_| {});
+                            st.api_client.set_api_url(&url);
+                            ac.dialog().message(format!("Endpoint changé vers :\n{}", url)).title("Succès")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
                             tracing::info!("API endpoint changed to {}", url);
                         }
                     }
+                    Err(e) => tracing::error!("Endpoint dialog failed: {}", e),
+                }
+            });
+        }
+        "reload_config" => {
+            if let Some(state) = app.try_state::<AppState>() {
+                match state.config_manager.load_config() {
+                    Ok(cfg) => {
+                        let msg = format!("Config rechargée.\n\nAPI: {}\nSlug: {}\nWatch: {}\nDry-Run: {}\nAdmin: {}",
+                            cfg.api_url, cfg.client_slug, cfg.root_path().display(), cfg.dry_run, cfg.admin_mode);
+                        let a = app.clone();
+                        a.dialog().message(&msg).title("Config rechargée")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                    }
                     Err(e) => {
-                        tracing::error!("Failed to show endpoint dialog: {}", e);
+                        let a = app.clone();
+                        a.dialog().message(format!("Erreur: {}", e)).title("Erreur")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
+                    }
+                }
+            }
+        }
+        "test_api" => {
+            let ac = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let url = ac.try_state::<AppState>()
+                    .and_then(|s| s.config_manager.load_config().ok())
+                    .map(|c| format!("{}/health", c.api_url.trim_end_matches('/')))
+                    .unwrap_or_default();
+                let result = match reqwest::get(&url).await {
+                    Ok(r) => format!("✅ {} {}\n\nStatus: {}", url, if r.status().is_success() { "OK" } else { "ERREUR" }, r.status()),
+                    Err(e) => format!("❌ {}\n\n{}", url, e),
+                };
+                ac.dialog().message(&result).title("Test API")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+            });
+        }
+        "export_logs" => {
+            let ac = app.clone();
+            std::thread::spawn(move || {
+                let logs = LOG_CAPTURE.get_logs(500).join("\n");
+                let path = ac.dialog().file()
+                    .add_filter("Logs", &["txt", "log"])
+                    .set_file_name("raguia-agent.log")
+                    .blocking_save_file();
+                if let Some(p) = path {
+                    match std::fs::write(p.as_path().unwrap_or_else(|| std::path::Path::new("/dev/null")), &logs) {
+                        Ok(_) => ac.dialog().message("Logs exportés ✓").title("Succès")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {}),
+                        Err(e) => ac.dialog().message(format!("Erreur écriture: {}", e)).title("Erreur")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}),
                     }
                 }
             });
         }
-        "admin" => {
-            let is_admin = app
-                .try_state::<AppState>()
-                .and_then(|s| s.config_manager.load_config().ok())
-                .map(|c| c.admin_mode)
-                .unwrap_or(false);
-
-            if !is_admin {
-                app.dialog()
-                    .message(
-                        "Mode admin verrouille.\n\nContactez l'administrateur pour activer le mode debug.",
-                    )
-                    .title("Admin")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-                    .show(move |_| {});
-                return;
+        "config_path" => {
+            if app.try_state::<AppState>().is_some() {
+                let m = config::Manager::new(app);
+                let path = m.store_path().to_string_lossy().to_string();
+                let msg = format!("Fichier config :\n{}\n\nÉditez-le manuellement puis utilisez « Recharger config »", path);
+                app.dialog().message(&msg).title("Chemin config")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
             }
-
-            let logs = LOG_CAPTURE.get_logs(100).join("\n");
-            let logs_section = if logs.is_empty() {
-                "Aucun log.".into()
-            } else {
-                logs
-            };
-
-            let queue_section = app
-                .try_state::<AppState>()
-                .and_then(|s| {
-                    let stats = s.queue_store.get_stats().ok()?;
-                    let stuck = s.queue_store.stuck_count().unwrap_or(0);
-                    Some(format!(
-                        "Attente:{}  Suppr:{}  Sync:{}  Bloque:{}",
-                        stats.pending, stats.pending_delete, stats.synced, stuck
-                    ))
-                })
-                .unwrap_or_else(|| "File: N/A".into());
-
-            let config_section = app
-                .try_state::<AppState>()
-                .and_then(|s| s.config_manager.load_config().ok())
-                .map(|c| format!("API:{}  Slug:{}  Poll:{}s", c.api_url, c.client_slug, c.poll_interval_secs))
-                .unwrap_or_else(|| "Config: N/A".into());
-
-            let msg = format!(
-                "=== MODE ADMIN ===\n\n--- LOGS ---\n{}\n\n--- FILE ---\n{}\n\n--- CONFIG ---\n{}\n\n[Desactiver: utiliser la commande `toggle_admin_mode`]",
-                logs_section, queue_section, config_section,
-            );
-
-            let app_clone = app.clone();
-            tauri::async_runtime::spawn(async move {
-                app_clone.dialog()
-                    .message(&msg)
-                    .title("Admin Panel")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-                    .show(|_| {});
-            });
+        }
+        "show_queue" => {
+            if let Some(state) = app.try_state::<AppState>() {
+                let msg = match state.queue_store.get_stats() {
+                    Ok(s) => format!("File d'attente\n\nEn attente: {}\nSuppressions: {}\nSynced: {}\nBloqués: {}\n\nUtilisez « Recharger config » pour réinitialiser les bloqués.",
+                        s.pending, s.pending_delete, s.synced, s.stuck),
+                    Err(e) => format!("Erreur: {}", e),
+                };
+                app.dialog().message(&msg).title("File d'attente")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+            }
         }
         _ => {}
     }
