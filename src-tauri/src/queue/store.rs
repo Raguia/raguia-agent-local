@@ -196,14 +196,14 @@ impl Store {
         Ok(())
     }
 
-    /// Reset all stuck entries back to pending (attempts=0).
-    /// Called after re-authentication to unblock files.
+    /// Reset all stuck or orphaned entries back to pending (attempts=0).
+    /// Covers failed entries and entries left in 'syncing' state after a crash.
     pub fn reset_stuck(&self) -> Result<u64, QueueError> {
         let conn = self.conn.lock().unwrap();
         let count = conn.execute(
             "UPDATE sync_queue SET status = 'pending', attempts = 0, error = '',
              updated_at = datetime('now')
-             WHERE status = 'failed' OR attempts >= ?1",
+             WHERE status IN ('failed', 'syncing') OR attempts >= ?1",
             params![MAX_TRIES_BEFORE_STUCK],
         )?;
         Ok(count as u64)
@@ -214,7 +214,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sync_queue
-             WHERE status = 'failed' OR (status = 'pending' AND attempts >= ?1)",
+             WHERE status IN ('failed', 'syncing') OR (status = 'pending' AND attempts >= ?1)",
             params![MAX_TRIES_BEFORE_STUCK],
             |row| row.get(0),
         )?;
@@ -252,7 +252,7 @@ impl Store {
                 COALESCE(SUM(CASE WHEN status IN ('pending', 'syncing') AND event_type != 'deleted' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN status IN ('pending', 'syncing') AND event_type = 'deleted' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN status = 'synced' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN status = 'failed' OR attempts >= ?1 THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN status IN ('failed', 'syncing') OR attempts >= ?1 THEN 1 ELSE 0 END), 0)
              FROM sync_queue",
         )?;
 

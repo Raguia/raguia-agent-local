@@ -68,18 +68,33 @@ impl Watcher {
         watcher.watch(&root, RecursiveMode::Recursive)?;
 
         // Spawn a thread to process file system events
-        std::thread::spawn(move || {
-            for event in rx {
-                match event {
-                    Ok(event) => {
-                        Self::handle_notify_event(&queue, &event, &root_for_thread, &extensions);
-                    }
-                    Err(e) => {
-                        tracing::error!("Watcher error: {}", e);
+        std::thread::Builder::new()
+            .name("raguia-watcher".into())
+            .spawn(move || {
+                for event in rx {
+                    let queue = queue.clone();
+                    let root = root_for_thread.clone();
+                    let exts = extensions.clone();
+                    // Catch panics in the handler so the watcher thread survives
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        match event {
+                            Ok(event) => {
+                                Self::handle_notify_event(&queue, &event, &root, &exts);
+                            }
+                            Err(e) => {
+                                tracing::error!("Watcher error: {}", e);
+                            }
+                        }
+                    }));
+                    if let Err(e) = result {
+                        let msg = e.downcast_ref::<String>().map(|s| s.as_str())
+                            .or_else(|| e.downcast_ref::<&str>().copied())
+                            .unwrap_or("unknown panic");
+                        tracing::error!("Watcher handler panicked and recovered: {}", msg);
                     }
                 }
-            }
-        });
+            })
+            .expect("Failed to spawn watcher thread");
 
         self.inner = Some(watcher);
         self.root = root.clone();

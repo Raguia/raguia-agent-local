@@ -99,6 +99,9 @@ async fn login(
         .set_password(&password)
         .map_err(|e| format!("Erreur sauvegarde mot de passe : {}", e))?;
 
+    // Update API client URL to use the newly configured endpoint
+    state.api_client.set_api_url(&cfg.api_url);
+
     // Authenticate
     let resp = state
         .api_client

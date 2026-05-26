@@ -90,6 +90,14 @@ git push origin v0.2.0
 
 Le CI build les binaires (Windows + macOS), les signe, et crée une GitHub Release avec les artefacts.
 
+**Mises à jour automatiques** : Depuis la v0.2.0+ du backend, l'endpoint `/api/agent/updates/` résout la dernière version **dynamiquement** via l'API GitHub (config `GITHUB_REPO` dans le `.env` du serveur).  
+→ **Plus aucune manipulation manuelle du `.env` n'est nécessaire après une release.**  
+Le CI met les artefacts dans la GitHub Release → le backend les sert automatiquement aux agents.
+
+:one: Ajouter `GITHUB_REPO=Raguia/Raguia` (ou le repo contenant l'agent) dans le `.env` du serveur  
+:two: Optionnel : `GITHUB_TOKEN=ghp_xxx` (token personnel, scope `public_repo`) pour éviter le rate-limiting GitHub  
+:three: Pusher un tag `v*` → le CI build + release → les agents reçoivent la mise à jour automatiquement
+
 ---
 
 ## 7. Dépannage

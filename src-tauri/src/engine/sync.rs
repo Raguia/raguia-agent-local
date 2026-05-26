@@ -138,6 +138,10 @@ fn get_local_folder_size(root: &Path) -> u64 {
     total
 }
 
+/// Minimum age in seconds before a queue entry is eligible for processing.
+/// Acts as a debounce to avoid picking up files while the watcher is still settling.
+const QUEUE_MIN_AGE_SECS: f64 = 5.0;
+
 // ─── Main sync loop ──────────────────────────────────────────
 
 /// The core sync engine running as a background tokio task.
@@ -237,6 +241,13 @@ pub async fn run_sync_loop(
                     if new_root != root {
                         tracing::warn!("Watch path changed from {:?} to {:?} — restart required", root, new_root);
                     }
+                }
+            }
+
+            // Clean up orphaned 'syncing' entries (left after a crash)
+            if let Ok(n) = queue.reset_stuck() {
+                if n > 0 {
+                    tracing::info!("{} entrée(s) orpheline(s) réinitialisée(s)", n);
                 }
             }
         }
@@ -532,9 +543,8 @@ async fn run_cycle(
         errors: vec![],
     };
 
-    // Pop batch with stability filter (unless server-requested, skip stability)
-    let min_age = 0.0; // Always process immediately for now (simplified)
-    let batch = match queue.pop_batch(max_files_per_cycle, min_age, MAX_TRIES_BEFORE_STUCK) {
+    // Pop batch with stability filter to avoid uploading files still being written
+    let batch = match queue.pop_batch(max_files_per_cycle, QUEUE_MIN_AGE_SECS, MAX_TRIES_BEFORE_STUCK) {
         Ok(b) => b,
         Err(e) => {
             tracing::error!("pop_batch failed: {}", e);
@@ -625,11 +635,12 @@ async fn run_cycle(
             continue;
         }
 
-        // Empty file (corrupted or in-progress write)
+        // Empty file (in-progress write) — don't mark done, wait for next cycle
         let file_size = match std::fs::metadata(&p) {
             Ok(m) if m.len() == 0 => {
-                tracing::warn!("Fichier vide ignoré: {}", item.rel_path);
-                let _ = queue.mark_done(&item.rel_path);
+                tracing::debug!("Fichier vide (écriture en cours ?), différé: {}", item.rel_path);
+                // Reset to pending so it stays in queue for the next cycle
+                let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
                 continue;
             }
             Ok(m) => m.len(),

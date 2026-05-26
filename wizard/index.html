@@ -194,9 +194,13 @@
 
   <script>
     (async () => {
-      const __TAURI__ = window.__TAURI__;
-      const invoke = __TAURI__.core.invoke;
-      const dialog = __TAURI__.dialog;
+      if (!window.__TAURI__) {
+        document.body.innerHTML = '<div style="text-align:center;padding:40px;font-family:sans-serif"><p>Cette page doit être ouverte depuis l\'application Raguia Agent.</p></div>';
+        return;
+      }
+
+      const { invoke } = window.__TAURI__.core;
+      const { open: dialogOpen } = window.__TAURI__.dialog;
 
       const form = document.getElementById('wizardForm');
       const connectBtn = document.getElementById('connectBtn');
@@ -214,7 +218,7 @@
 
       browseBtn.addEventListener('click', async () => {
         try {
-          const selected = await dialog.open({
+          const selected = await dialogOpen({
             directory: true,
             multiple: false,
             title: 'Choisir le dossier de synchronisation'
@@ -256,7 +260,7 @@
           // Close wizard window after a short delay
           setTimeout(async () => {
             try {
-              await __TAURI__.window.getCurrent().close();
+              await window.__TAURI__.window.getCurrent().close();
             } catch {
               window.close();
             }

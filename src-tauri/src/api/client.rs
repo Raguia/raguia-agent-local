@@ -420,9 +420,7 @@ impl Client {
             ));
         }
 
-        self.config
-            .set_token(&payload.agent_access_token)
-            .map_err(|e| ApiError::Config(e.to_string()))?;
+        self.set_token(&payload.agent_access_token)?;
 
         Ok(payload)
     }
@@ -509,9 +507,7 @@ impl Client {
             client_slug: Some(slug.to_string()),
         };
 
-        self.config
-            .set_token(&response.agent_access_token)
-            .map_err(|e| ApiError::Config(e.to_string()))?;
+        self.set_token(&response.agent_access_token)?;
 
         Ok(response)
     }
@@ -705,9 +701,7 @@ impl Client {
             ApiError::InvalidResponse("refresh-token réponse sans access_token".into())
         })?;
 
-        self.config
-            .set_token(&token)
-            .map_err(|e| ApiError::Config(e.to_string()))?;
+        self.set_token(&token)?;
 
         Ok(token)
     }
