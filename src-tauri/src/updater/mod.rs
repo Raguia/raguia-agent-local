@@ -57,13 +57,13 @@ impl Updater {
         let result = updater.check().await;
         match &result {
             Ok(Some(update)) => {
-                let has_sig = update.signature.as_deref().unwrap_or("").len() > 10;
+                let has_sig = update.signature.len() > 10;
                 tracing::info!(
                     "Update available: v{} (current: v{}) has_sig={} url={}",
                     update.version,
                     self.current_version,
                     has_sig,
-                    update.download_url(),
+                    update.download_url,
                 );
                 let version = update.version.clone();
                 UpdateStatus::Available {
