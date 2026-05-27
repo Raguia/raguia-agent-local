@@ -74,7 +74,7 @@ jobs:
 
           cp src-tauri/target/release/bundle/msi/*.msi "$MSI"
           sha256sum "$MSI" > "$SHA"
-          if [ -f src-tauri/target/release/bundle/msi/*.msi.sig ]; then
+          if ls src-tauri/target/release/bundle/msi/*.msi.sig 2>/dev/null; then
             cp src-tauri/target/release/bundle/msi/*.msi.sig "$SIG"
           fi
 
