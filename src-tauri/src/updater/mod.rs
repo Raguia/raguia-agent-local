@@ -54,12 +54,16 @@ impl Updater {
             }
         };
 
-        match updater.check().await {
+        let result = updater.check().await;
+        match &result {
             Ok(Some(update)) => {
+                let has_sig = update.signature.as_deref().unwrap_or("").len() > 10;
                 tracing::info!(
-                    "Update available: {} (current: {})",
+                    "Update available: v{} (current: v{}) has_sig={} url={}",
                     update.version,
-                    self.current_version
+                    self.current_version,
+                    has_sig,
+                    update.download_url(),
                 );
                 let version = update.version.clone();
                 UpdateStatus::Available {
@@ -69,11 +73,11 @@ impl Updater {
                 }
             }
             Ok(None) => {
-                tracing::debug!("No update available (current: {})", self.current_version);
+                tracing::debug!("No update available (current: v{})", self.current_version);
                 UpdateStatus::UpToDate
             }
             Err(e) => {
-                tracing::warn!("Update check failed: {}", e);
+                tracing::error!("Update check failed: {} (current: v{})", e, self.current_version);
                 UpdateStatus::Error(e.to_string())
             }
         }
@@ -82,10 +86,15 @@ impl Updater {
     /// Check for update silently (for auto-update mode).
     /// Returns true if an update is available.
     pub async fn check_silent(&self) -> bool {
-        match self.check_for_update().await {
-            UpdateStatus::Available { .. } => {
-                tracing::info!("Update available — dialog will be shown by the plugin");
+        let result = self.check_for_update().await;
+        match &result {
+            UpdateStatus::Available { version, .. } => {
+                tracing::info!("Silent check: update v{} available — dialog will show", version);
                 true
+            }
+            UpdateStatus::Error(e) => {
+                tracing::warn!("Silent check: error (ignored for tray): {}", e);
+                false
             }
             _ => false,
         }
