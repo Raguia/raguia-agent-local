@@ -1,23 +1,3 @@
-name: build-agent-binaries
-
-on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Tag de release cible (ex: v0.1.0). Laisser vide pour build-only."
-        required: false
-        type: string
-
-permissions:
-  contents: write
-
-env:
-  WORK_DIR: ${{ github.repository == 'Raguia/raguia-agent-local' && '.' || 'raguia_local_agent' }}
-
-jobs:
   build-windows:
     name: Build Windows binary
     runs-on: windows-latest
@@ -97,6 +77,25 @@ jobs:
             ${{ env.WORK_DIR }}/raguia-agent-windows-*.zip
             ${{ env.WORK_DIR }}/raguia-agent-windows-*.zip.sig
           if-no-files-found: error
+
+      - name: Verify updater artifacts (Windows)
+        if: github.event_name == 'push' || github.event.inputs.release_tag != ''
+        shell: bash
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          MISSING=0
+          for f in "raguia-agent-windows-$VERSION.msi" "raguia-agent-windows-$VERSION.msi.sig"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Updater artifact manquant: $f (Tauri ne pourra pas vérifier l'install)"
+              MISSING=1
+            fi
+          done
+          if [ $MISSING -ne 0 ]; then
+            echo "::error::Build incomplet. Vérifiez createUpdaterArtifacts=true dans tauri.conf.json et TAURI_SIGNING_PRIVATE_KEY dans les secrets."
+            exit 1
+          fi
+          echo "OK: artefacts updater Windows presents"
+
 
   build-macos:
     name: Build macOS arm64 binary
@@ -207,6 +206,25 @@ jobs:
             ${{ env.WORK_DIR }}/raguia-agent-macos-*.app.tar.gz
             ${{ env.WORK_DIR }}/raguia-agent-macos-*.app.tar.gz.sig
           if-no-files-found: error
+
+      - name: Verify updater artifacts (macOS)
+        if: github.event_name == 'push' || github.event.inputs.release_tag != ''
+        shell: bash
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          MISSING=0
+          for f in "raguia-agent-macos-$VERSION.app.tar.gz" "raguia-agent-macos-$VERSION.app.tar.gz.sig"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Updater artifact manquant: $f (updater Tauri a besoin de .app.tar.gz, pas .dmg)"
+              MISSING=1
+            fi
+          done
+          if [ $MISSING -ne 0 ]; then
+            echo "::error::Build incomplet. Vérifiez createUpdaterArtifacts=true dans tauri.conf.json."
+            exit 1
+          fi
+          echo "OK: artefacts updater macOS presents"
+
 
   publish-release:
     name: Publish GitHub release assets
