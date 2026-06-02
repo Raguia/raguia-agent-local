@@ -21,8 +21,9 @@ use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use image::GenericImageView;
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_updater::UpdaterExt;
 
 /// Shared application state accessible from Tauri commands and tray handlers.
 pub struct AppState {
@@ -330,12 +331,70 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         "check_updates" => {
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
-                let msg = crate::updater::check_and_show_dialog(&app_clone).await;
-                app_clone.dialog()
-                    .message(msg)
-                    .title("Mise à jour")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-                    .show(|_| {});
+                let updater = match app_clone.updater() {
+                    Ok(u) => u,
+                    Err(e) => {
+                        let _ = app_clone.dialog()
+                            .message(format!("Updater non configuré : {}", e))
+                            .title("Mise à jour")
+                            .kind(MessageDialogKind::Error)
+                            .show(|_| {});
+                        return;
+                    }
+                };
+                match updater.check().await {
+                    Ok(Some(update)) => {
+                        let version = update.version.clone();
+                        let body = update.body.clone().unwrap_or_default();
+                        let msg = if body.is_empty() {
+                            format!("v{} disponible. Installer maintenant ?", version)
+                        } else {
+                            format!("v{} disponible.\n\n{}\n\nInstaller maintenant ?", version, body)
+                        };
+                        let app_for_install = app_clone.clone();
+                        let _ = app_clone.dialog()
+                            .message(msg)
+                            .title("Mise à jour")
+                            .kind(MessageDialogKind::Info)
+                            .buttons(MessageDialogButtons::OkCancel)
+                            .show(move |accepted| {
+                                if !accepted {
+                                    return;
+                                }
+                                let app = app_for_install.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    match update.download_and_install(|_chunk, _total| {}, || {}).await {
+                                        Ok(_) => {
+                                            tracing::info!("Update v{} installed — exiting", version);
+                                            app.exit(0);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Update install failed: {}", e);
+                                            let _ = app.dialog()
+                                                .message(format!("Échec installation : {}", e))
+                                                .title("Mise à jour")
+                                                .kind(MessageDialogKind::Error)
+                                                .show(|_| {});
+                                        }
+                                    }
+                                });
+                            });
+                    }
+                    Ok(None) => {
+                        let _ = app_clone.dialog()
+                            .message(format!("Raguia Agent est à jour (v{})", env!("CARGO_PKG_VERSION")))
+                            .title("Mise à jour")
+                            .kind(MessageDialogKind::Info)
+                            .show(|_| {});
+                    }
+                    Err(e) => {
+                        let _ = app_clone.dialog()
+                            .message(format!("Erreur vérification : {}", e))
+                            .title("Mise à jour")
+                            .kind(MessageDialogKind::Error)
+                            .show(|_| {});
+                    }
+                }
             });
         }
         "about" => {

@@ -1,13 +1,13 @@
 use crate::api::{self, ApiError};
 use crate::config;
 use crate::queue::{self, MAX_TRIES_BEFORE_STUCK};
-use crate::updater;
 use crate::watcher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri::Emitter as _;
+use tauri_plugin_updater::UpdaterExt as _;
 
 /// Status string emitted to the tray
 #[derive(Debug, Clone, serde::Serialize)]
@@ -285,11 +285,22 @@ pub async fn run_sync_loop(
         // ── 2. Check for updates ──
         if cfg.auto_update && last_update_check.elapsed() >= auto_update_check {
             last_update_check = Instant::now();
-            if updater::Updater::new(app_handle.clone())
-                .check_silent()
-                .await
-            {
-                tracing::info!("Update available — plugin will show dialog");
+            match app_handle.updater() {
+                Ok(u) => match u.check().await {
+                    Ok(Some(update)) => {
+                        tracing::info!("Auto-update v{} → downloading + installing", update.version);
+                        match update.download_and_install(|_chunk, _total| {}, || {}).await {
+                            Ok(_) => {
+                                tracing::info!("Auto-update installed — exiting for restart");
+                                app_handle.exit(0);
+                            }
+                            Err(e) => tracing::error!("Auto-update install failed: {}", e),
+                        }
+                    }
+                    Ok(None) => tracing::debug!("Auto-update: up to date"),
+                    Err(e) => tracing::warn!("Auto-update check failed: {}", e),
+                },
+                Err(e) => tracing::warn!("Updater plugin unavailable: {}", e),
             }
         }
 
