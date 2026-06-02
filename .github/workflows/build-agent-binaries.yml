@@ -69,13 +69,21 @@ jobs:
         run: |
           VERSION="${RELEASE_TAG#v}"
           MSI="raguia-agent-windows-$VERSION.msi"
+          ZIP="raguia-agent-windows-$VERSION.zip"
           SIG="raguia-agent-windows-$VERSION.msi.sig"
+          ZSIG="raguia-agent-windows-$VERSION.zip.sig"
           SHA="raguia-agent-windows-$VERSION.msi.sha256"
 
           cp src-tauri/target/release/bundle/msi/*.msi "$MSI"
           sha256sum "$MSI" > "$SHA"
           if ls src-tauri/target/release/bundle/msi/*.msi.sig 2>/dev/null; then
             cp src-tauri/target/release/bundle/msi/*.msi.sig "$SIG"
+          fi
+          if ls src-tauri/target/release/bundle/msi/*.zip 2>/dev/null; then
+            cp src-tauri/target/release/bundle/msi/*.zip "$ZIP"
+            if ls src-tauri/target/release/bundle/msi/*.zip.sig 2>/dev/null; then
+              cp src-tauri/target/release/bundle/msi/*.zip.sig "$ZSIG"
+            fi
           fi
 
       - name: Upload artifacts
@@ -86,6 +94,8 @@ jobs:
             ${{ env.WORK_DIR }}/raguia-agent-windows-*.msi
             ${{ env.WORK_DIR }}/raguia-agent-windows-*.msi.sha256
             ${{ env.WORK_DIR }}/raguia-agent-windows-*.msi.sig
+            ${{ env.WORK_DIR }}/raguia-agent-windows-*.zip
+            ${{ env.WORK_DIR }}/raguia-agent-windows-*.zip.sig
           if-no-files-found: error
 
   build-macos:
@@ -169,13 +179,21 @@ jobs:
         run: |
           VERSION="${RELEASE_TAG#v}"
           DMG="raguia-agent-macos-$VERSION.dmg"
+          TARGZ="raguia-agent-macos-$VERSION.app.tar.gz"
           SIG="raguia-agent-macos-$VERSION.dmg.sig"
+          TSIG="raguia-agent-macos-$VERSION.app.tar.gz.sig"
           SHA="raguia-agent-macos-$VERSION.dmg.sha256"
 
           cp src-tauri/target/release/bundle/dmg/*.dmg "$DMG"
           shasum -a 256 "$DMG" > "$SHA"
           if ls src-tauri/target/release/bundle/dmg/*.dmg.sig 2>/dev/null; then
             cp src-tauri/target/release/bundle/dmg/*.dmg.sig "$SIG"
+          fi
+          if ls src-tauri/target/release/bundle/macos/*.app.tar.gz 2>/dev/null; then
+            cp src-tauri/target/release/bundle/macos/*.app.tar.gz "$TARGZ"
+            if ls src-tauri/target/release/bundle/macos/*.app.tar.gz.sig 2>/dev/null; then
+              cp src-tauri/target/release/bundle/macos/*.app.tar.gz.sig "$TSIG"
+            fi
           fi
 
       - name: Upload artifacts
@@ -186,6 +204,8 @@ jobs:
             ${{ env.WORK_DIR }}/raguia-agent-macos-*.dmg
             ${{ env.WORK_DIR }}/raguia-agent-macos-*.dmg.sha256
             ${{ env.WORK_DIR }}/raguia-agent-macos-*.dmg.sig
+            ${{ env.WORK_DIR }}/raguia-agent-macos-*.app.tar.gz
+            ${{ env.WORK_DIR }}/raguia-agent-macos-*.app.tar.gz.sig
           if-no-files-found: error
 
   publish-release:
@@ -212,6 +232,10 @@ jobs:
             release-assets/*.msi
             release-assets/*.msi.sha256
             release-assets/*.msi.sig
+            release-assets/*.zip
+            release-assets/*.zip.sig
             release-assets/*.dmg
             release-assets/*.dmg.sha256
             release-assets/*.dmg.sig
+            release-assets/*.app.tar.gz
+            release-assets/*.app.tar.gz.sig
