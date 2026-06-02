@@ -1,6 +1,6 @@
 [package]
 name = "raguia-agent"
-version = "0.1.35"
+version = "0.1.36"
 description = "Raguia Desktop Sync Agent"
 authors = ["Raguia"]
 edition = "2021"
@@ -31,7 +31,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 open = "5"
 image = "0.25"
