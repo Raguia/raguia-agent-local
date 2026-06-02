@@ -9,7 +9,6 @@ mod config;
 mod engine;
 mod log_capture;
 mod queue;
-mod updater;
 mod watcher;
 
 use std::sync::atomic::{AtomicBool, Ordering};
