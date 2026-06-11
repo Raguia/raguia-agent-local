@@ -16,6 +16,7 @@
     "store:default",
     "fs:default",
     "shell:default",
+    "shell:allow-open",
     "opener:default",
     "updater:default",
     "autostart:default"

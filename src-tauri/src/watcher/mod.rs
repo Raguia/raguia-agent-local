@@ -1,9 +1,11 @@
 use crate::config;
 use crate::queue;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
+use notify::{
+    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
+};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Watcher errors
@@ -71,7 +73,14 @@ impl Watcher {
         std::thread::Builder::new()
             .name("raguia-watcher".into())
             .spawn(move || {
+                // Bug 6: exponential backoff on repeated errors
+                // (e.g. Windows ReadDirectoryChangesW when the dir is renamed)
+                let mut consecutive_errors: u32 = 0;
+                let mut backoff_ms: u64 = 0;
                 for event in rx {
+                    if backoff_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                    }
                     let queue = queue.clone();
                     let root = root_for_thread.clone();
                     let exts = extensions.clone();
@@ -86,11 +95,28 @@ impl Watcher {
                             }
                         }
                     }));
-                    if let Err(e) = result {
-                        let msg = e.downcast_ref::<String>().map(|s| s.as_str())
-                            .or_else(|| e.downcast_ref::<&str>().copied())
-                            .unwrap_or("unknown panic");
-                        tracing::error!("Watcher handler panicked and recovered: {}", msg);
+                    match result {
+                        Ok(()) => {
+                            if consecutive_errors > 0 {
+                                tracing::info!(
+                                    "Watcher recovered after {} error(s)",
+                                    consecutive_errors
+                                );
+                            }
+                            consecutive_errors = 0;
+                            backoff_ms = 0;
+                        }
+                        Err(e) => {
+                            consecutive_errors = consecutive_errors.saturating_add(1);
+                            backoff_ms = (1000u64 << consecutive_errors.min(5)).min(30_000);
+                            let msg = e.downcast_ref::<String>().map(|s| s.as_str())
+                                .or_else(|| e.downcast_ref::<&str>().copied())
+                                .unwrap_or("unknown panic");
+                            tracing::error!(
+                                "Watcher handler panicked and recovered: {} (backoff {}ms, attempt #{})",
+                                msg, backoff_ms, consecutive_errors
+                            );
+                        }
                     }
                 }
             })
@@ -112,7 +138,12 @@ impl Watcher {
     ///
     /// Matches Python ``watcher._on_fs_event()`` + ``_should_ignore()`` logic.
     /// Filters by supported extensions from the current config.
-    fn handle_notify_event(queue: &queue::Store, event: &Event, root: &Path, supported_extensions: &[String]) {
+    fn handle_notify_event(
+        queue: &queue::Store,
+        event: &Event,
+        root: &Path,
+        supported_extensions: &[String],
+    ) {
         // Determine event type
         let event_type = match event.kind {
             EventKind::Remove(_) => "deleted",
@@ -127,11 +158,17 @@ impl Watcher {
             }
 
             // Filter by supported extensions (Python _on_fs_event: path.suffix.lower not in cfg.supported_extensions)
-            let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
-            let ext_match = ext.as_ref().map(|e| {
-                let with_dot = format!(".{}", e);
-                supported_extensions.iter().any(|s| s == &with_dot)
-            }).unwrap_or(false);
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase());
+            let ext_match = ext
+                .as_ref()
+                .map(|e| {
+                    let with_dot = format!(".{}", e);
+                    supported_extensions.iter().any(|s| s == &with_dot)
+                })
+                .unwrap_or(false);
             if !ext_match {
                 continue;
             }

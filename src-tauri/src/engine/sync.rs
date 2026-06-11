@@ -3,11 +3,16 @@ use crate::config;
 use crate::queue::{self, MAX_TRIES_BEFORE_STUCK};
 use crate::watcher;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri::Emitter as _;
 use tauri_plugin_updater::UpdaterExt as _;
+
+/// Cap consecutive re-enqueues for perpetually-unstable files (Bug E).
+/// After this many skips, the file is marked failed to avoid a sync storm.
+const MAX_UNSTABLE_RETRIES: u32 = 20;
 
 /// Status string emitted to the tray
 #[derive(Debug, Clone, serde::Serialize)]
@@ -147,6 +152,7 @@ const QUEUE_MIN_AGE_SECS: f64 = 5.0;
 /// The core sync engine running as a background tokio task.
 ///
 /// Mirrors Python ``SyncAgent.run_forever()``.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_sync_loop(
     app_handle: AppHandle,
     config: Arc<config::Manager>,
@@ -154,21 +160,24 @@ pub async fn run_sync_loop(
     queue: Arc<queue::Store>,
     watcher: Arc<tokio::sync::Mutex<watcher::Watcher>>,
     wake: Arc<tokio::sync::Notify>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
+    stop: Arc<AtomicBool>,
+    force_sync: Arc<AtomicBool>,
+    engine_stopped: Arc<tokio::sync::Notify>,
 ) {
     tracing::info!("Sync engine started");
 
     // Load initial config
-    let cfg = match config.load_config() {
+    let mut cfg = match config.load_config() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Failed to load config in sync engine: {}", e);
             emit_status(&app_handle, &TrayStatus::Error { message: format!("Erreur de configuration: {}", e) });
+            engine_stopped.notify_waiters();
             return;
         }
     };
 
-    let root = cfg.root_path();
+    let mut root = cfg.root_path();
     tracing::info!("Watching directory: {:?}", root);
 
     // Ensure root exists
@@ -188,14 +197,19 @@ pub async fn run_sync_loop(
         }
     }
 
-    let root_label = cfg.root_folder_name.clone();
-    let stability_secs = cfg.stability_secs as f64;
-    let max_files_per_cycle = cfg.max_files_per_cycle;
-    let burst_threshold = cfg.burst_threshold;
-    let sync_cooldown_secs = cfg.sync_cooldown_secs;
+    let mut root_label = cfg.root_folder_name.clone();
+    let mut stability_secs = cfg.stability_secs as f64;
+    let mut max_files_per_cycle = cfg.max_files_per_cycle;
+    let mut burst_threshold = cfg.burst_threshold;
+    let mut sync_cooldown_secs = cfg.sync_cooldown_secs;
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs.max(5));
-    let auto_update_check = Duration::from_secs(cfg.auto_update_check_hours * 3600);
-    let dry_run = cfg.dry_run;
+    let mut auto_update_check = Duration::from_secs(cfg.auto_update_check_hours * 3600);
+    let mut dry_run = cfg.dry_run;
+    // Bug A: tracked separately so we can re-apply on config reload
+    let mut auto_update_enabled = cfg.auto_update;
+
+    // Bug B: last known quota from the server, applied to all sync types
+    let mut last_known_quota: Option<u64> = None;
 
     // State
     let mut last_cooldown_ts = Instant::now();
@@ -230,17 +244,45 @@ pub async fn run_sync_loop(
         config_reload_counter += 1;
         if config_reload_counter.is_multiple_of(6) {
             if let Ok(refreshed) = config.load_config() {
-                // Only log on actual changes
-                if refreshed.api_url != cfg.api_url
+                // Detect changes that affect the running loop
+                let changed = refreshed.api_url != cfg.api_url
                     || refreshed.client_slug != cfg.client_slug
                     || refreshed.watch_parent != cfg.watch_parent
-                {
+                    || refreshed.root_folder_name != cfg.root_folder_name
+                    || refreshed.stability_secs != cfg.stability_secs
+                    || refreshed.burst_threshold != cfg.burst_threshold
+                    || refreshed.sync_cooldown_secs != cfg.sync_cooldown_secs
+                    || refreshed.poll_interval_secs != cfg.poll_interval_secs
+                    || refreshed.max_files_per_cycle != cfg.max_files_per_cycle
+                    || refreshed.dry_run != cfg.dry_run
+                    || refreshed.auto_update != cfg.auto_update
+                    || refreshed.auto_update_check_hours != cfg.auto_update_check_hours;
+
+                if changed {
                     tracing::info!("Configuration changed — applying update");
-                    // Update cached values that affect the loop
                     let new_root = refreshed.root_path();
                     if new_root != root {
                         tracing::warn!("Watch path changed from {:?} to {:?} — restart required", root, new_root);
                     }
+                    cfg = refreshed;
+                    root = cfg.root_path();
+                    root_label = cfg.root_folder_name.clone();
+                    stability_secs = cfg.stability_secs as f64;
+                    max_files_per_cycle = cfg.max_files_per_cycle;
+                    burst_threshold = cfg.burst_threshold;
+                    sync_cooldown_secs = cfg.sync_cooldown_secs;
+                    // poll_interval change requires restarting the tokio interval;
+                    // log it for awareness, but don't try to apply mid-loop.
+                    if poll_interval.as_secs() != cfg.poll_interval_secs.max(5) {
+                        tracing::info!(
+                            "Poll interval change detected ({}s → {}s) — restart required to apply",
+                            poll_interval.as_secs(),
+                            cfg.poll_interval_secs,
+                        );
+                    }
+                    auto_update_check = Duration::from_secs(cfg.auto_update_check_hours * 3600);
+                    dry_run = cfg.dry_run;
+                    auto_update_enabled = cfg.auto_update; // Bug A
                 }
             }
 
@@ -264,7 +306,9 @@ pub async fn run_sync_loop(
                         }
                         Err(e) => {
                             tracing::error!("Échec renouvellement token: {}", e);
-                            emit_status(&app_handle, &TrayStatus::Warning {
+                            // Bug 13: surface a real Error status so the user
+                            // sees the red tray icon and is prompted to reconnect.
+                            emit_status(&app_handle, &TrayStatus::Error {
                                 message: "Session expirée — reconnectez-vous".into(),
                             });
                         }
@@ -283,7 +327,7 @@ pub async fn run_sync_loop(
         }
 
         // ── 2. Check for updates ──
-        if cfg.auto_update && last_update_check.elapsed() >= auto_update_check {
+        if auto_update_enabled && last_update_check.elapsed() >= auto_update_check {
             last_update_check = Instant::now();
             match app_handle.updater() {
                 Ok(u) => match u.check().await {
@@ -315,14 +359,20 @@ pub async fn run_sync_loop(
 
                     // Try auto-reconnect with stored password
                     if let Some(password) = config.get_password() {
-                        let slug = config.load_config()
-                            .map(|c| c.client_slug)
-                            .unwrap_or_default();
+                        // Bug C: re-read config first so the slug is up to date
+                        let current_cfg = config.load_config().unwrap_or_else(|_| cfg.clone());
+                        let slug = current_cfg.client_slug.clone();
                         if !slug.is_empty() && !password.is_empty() {
                             match api.login(&slug, &password).await {
                                 Ok(resp) => {
                                     tracing::info!("Reconnexion auto réussie");
                                     api.set_token(&resp.agent_access_token).ok();
+
+                                    // Bug C: refresh the local cfg so subsequent
+                                    // iterations see the new values
+                                    if let Ok(refreshed) = config.load_config() {
+                                        cfg = refreshed;
+                                    }
 
                                     // Reset stuck files so they can retry
                                     if let Ok(n) = queue.reset_stuck() {
@@ -385,6 +435,13 @@ pub async fn run_sync_loop(
             }
         };
 
+        // Bug B: capture quota from any successful sync_status (not just server_requested)
+        if let Some(ref st) = sync_status {
+            if let Some(q) = st.max_storage_bytes {
+                last_known_quota = Some(q);
+            }
+        }
+
         if stop.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
@@ -410,7 +467,10 @@ pub async fn run_sync_loop(
             .map(|st| st.sync_requested)
             .unwrap_or(false);
 
-        let should_sync = server_requested || pending_delete > 0 || (cooldown_ok && burst);
+        // Manual force-sync bypasses cooldown
+        let manual_force = force_sync.swap(false, Ordering::Acquire);
+
+        let should_sync = manual_force || server_requested || pending_delete > 0 || (cooldown_ok && burst);
 
         if stuck > 0 {
             tracing::warn!("{} fichier(s) bloqué(s) — clic droit → Réinitialiser", stuck);
@@ -431,10 +491,11 @@ pub async fn run_sync_loop(
 
             emit_status(&app_handle, &TrayStatus::Syncing);
 
+            // Bug B: quota now applied to any sync, not just server_requested
             let quota = if server_requested {
-                sync_status.as_ref().and_then(|st| st.max_storage_bytes)
+                sync_status.as_ref().and_then(|st| st.max_storage_bytes).or(last_known_quota)
             } else {
-                None
+                last_known_quota
             };
 
             let metrics = run_cycle(
@@ -522,6 +583,8 @@ pub async fn run_sync_loop(
     }
     emit_status(&app_handle, &TrayStatus::Stopped);
     tracing::info!("Sync engine stopped");
+    // Bug G: signal any thread waiting for graceful exit
+    engine_stopped.notify_waiters();
 }
 
 // ─── Sync cycle metrics ──────────────────────────────────────
@@ -650,8 +713,21 @@ async fn run_cycle(
         let file_size = match std::fs::metadata(&p) {
             Ok(m) if m.len() == 0 => {
                 tracing::debug!("Fichier vide (écriture en cours ?), différé: {}", item.rel_path);
-                // Reset to pending so it stays in queue for the next cycle
-                let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
+                // Bug E: cap re-enqueues for files stuck at 0 bytes
+                match queue.bump_unstable(&item.rel_path) {
+                    Ok(n) if n >= MAX_UNSTABLE_RETRIES => {
+                        let err = format!("Fichier vide (0 octet) depuis {} cycles — abandonné", n);
+                        tracing::warn!("{}: {}", err, item.rel_path);
+                        let _ = queue.mark_error(&item.rel_path, &err);
+                        metrics.errors.push(format!("{}: {}", item.rel_path, err));
+                    }
+                    Ok(_) => {
+                        let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
+                    }
+                    Err(_) => {
+                        let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
+                    }
+                }
                 continue;
             }
             Ok(m) => m.len(),
@@ -673,9 +749,27 @@ async fn run_cycle(
         // Check file stability (wait for writes to finish)
         if !is_file_stable(&p, stability_secs) {
             tracing::debug!("Fichier instable (modifié récemment), différé: {}", item.rel_path);
-            // Don't mark done — it'll be re-enqueued by the watcher
-            // Reset to pending so it stays in queue
-            let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
+            // Bug E: cap infinite re-enqueue loops for files that are perpetually
+            // being written. After MAX_UNSTABLE_RETRIES skips, mark as failed
+            // so the user sees the stuck badge and can take action.
+            match queue.bump_unstable(&item.rel_path) {
+                Ok(n) if n >= MAX_UNSTABLE_RETRIES => {
+                    let err = format!(
+                        "Fichier instable depuis {} cycles ({}s) — abandonné",
+                        n, stability_secs
+                    );
+                    tracing::warn!("{}: {}", err, item.rel_path);
+                    let _ = queue.mark_error(&item.rel_path, &err);
+                    metrics.errors.push(format!("{}: {}", item.rel_path, err));
+                }
+                Ok(_) => {
+                    let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
+                }
+                Err(e) => {
+                    tracing::warn!("bump_unstable failed for {}: {}", item.rel_path, e);
+                    let _ = queue.enqueue(&item.rel_path, &item.abs_path, "modified");
+                }
+            }
             continue;
         }
 
@@ -752,6 +846,10 @@ fn apply_remote_deletions(
 
     // Canonicalize root once for path traversal safety
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // Strip Windows extended-length prefix (\\?\) on both sides for consistent
+    // comparison — on Windows canonicalize returns \\?\C:\... which would
+    // otherwise never `starts_with` the unprefixed root.
+    let canonical_root_norm = strip_unc_prefix(&canonical_root);
 
     let mut deleted = 0u64;
     let mut failed = 0u64;
@@ -763,7 +861,8 @@ fn apply_remote_deletions(
         // Path traversal safety: ensure resolved path is under canonical root
         match target.canonicalize() {
             Ok(resolved) => {
-                if !resolved.starts_with(&canonical_root) {
+                let resolved_norm = strip_unc_prefix(&resolved);
+                if !resolved_norm.starts_with(&canonical_root_norm) {
                     tracing::warn!("Remote deletion path traversal blocked: {} (resolved={:?}, root={:?})", rel, resolved, canonical_root);
                     failed += 1;
                     continue;
@@ -798,4 +897,20 @@ fn apply_remote_deletions(
         };
         emit_status(app_handle, &TrayStatus::Warning { message: msg });
     }
+}
+
+/// Strip Windows extended-length path prefix (`\\?\`) for consistent comparison.
+///
+/// On Windows, `Path::canonicalize()` returns paths like `\\?\C:\foo\bar`
+/// while user-provided paths are `C:\foo\bar`. Direct `starts_with` would
+/// always return false. This normalises both sides.
+fn strip_unc_prefix(p: &Path) -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let s = p.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(stripped);
+        }
+    }
+    p.to_path_buf()
 }

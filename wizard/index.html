@@ -208,10 +208,13 @@
       const browseBtn = document.getElementById('browseBtn');
       const watchDir = document.getElementById('watchDir');
 
-      // Default watch dir: ~/Documents/RAGUIA
+      // Default watch dir: <home>/Documents/RAGUIA
+      // Uses Tauri command (cross-platform) instead of deprecated navigator.platform
       try {
         const home = await invoke('get_home_dir');
-        watchDir.value = home + '/Documents/RAGUIA';
+        const os = await invoke('get_os_kind');
+        const sep = os === 'windows' ? '\\' : '/';
+        watchDir.value = home + sep + 'Documents' + sep + 'RAGUIA';
       } catch {
         watchDir.value = '~/Documents/RAGUIA';
       }
@@ -242,6 +245,12 @@
 
         if (!apiUrl || !slug || !password) {
           setMessage('Veuillez remplir tous les champs obligatoires.', 'error');
+          return;
+        }
+
+        // Bug 12: validate apiUrl scheme client-side to catch typos early
+        if (!/^https?:\/\/.+/.test(apiUrl)) {
+          setMessage('URL du portail invalide. Elle doit commencer par http:// ou https://', 'error');
           return;
         }
 

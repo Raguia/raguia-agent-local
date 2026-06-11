@@ -77,6 +77,10 @@ impl Store {
                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
 
+             -- Bug E: tracks how many consecutive times a file was skipped
+             -- because it was deemed unstable. Caps re-enqueue loops.
+             ALTER TABLE sync_queue ADD COLUMN unstable_attempts INTEGER NOT NULL DEFAULT 0;
+
              CREATE INDEX IF NOT EXISTS idx_queue_status ON sync_queue(status);
              CREATE INDEX IF NOT EXISTS idx_queue_rel_path ON sync_queue(rel_path);",
         )?;
@@ -90,6 +94,7 @@ impl Store {
     ///
     /// If the file already exists with the same rel_path, its status is reset
     /// to 'pending' and event_type updated. Matches Python behavior.
+    /// Note: `unstable_attempts` is preserved (only cleared by `mark_done` or `reset_stuck`).
     pub fn enqueue(
         &self,
         rel_path: &str,
@@ -111,6 +116,29 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Increment the unstable-attempts counter for a re-enqueued file.
+    /// Returns the new value so the caller can decide whether to give up.
+    pub fn bump_unstable(&self, rel_path: &str) -> Result<u32, QueueError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sync_queue
+             SET unstable_attempts = unstable_attempts + 1,
+                 updated_at = datetime('now')
+             WHERE rel_path = ?1",
+            params![rel_path],
+        )?;
+        let n: i64 = conn.query_row(
+            "SELECT unstable_attempts FROM sync_queue WHERE rel_path = ?1",
+            params![rel_path],
+            |row| row.get(0),
+        )?;
+        Ok(n as u32)
+    }
+
+    /// Threshold above which a perpetually-unstable file is marked failed
+    /// (Bug E: prevents infinite re-enqueue loops for files still being written).
+    pub const MAX_UNSTABLE_ATTEMPTS: u32 = 20;
 
     /// Pop a batch of pending entries for processing.
     ///
@@ -179,7 +207,11 @@ impl Store {
     pub fn mark_done(&self, rel_path: &str) -> Result<(), QueueError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE sync_queue SET status = 'synced', updated_at = datetime('now') WHERE rel_path = ?1",
+            "UPDATE sync_queue
+             SET status = 'synced',
+                 unstable_attempts = 0,
+                 updated_at = datetime('now')
+             WHERE rel_path = ?1",
             params![rel_path],
         )?;
         Ok(())

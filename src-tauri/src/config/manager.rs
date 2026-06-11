@@ -8,6 +8,12 @@ use thiserror::Error;
 /// Service name for macOS Keychain entries
 const KEYCHAIN_SERVICE: &str = "com.raguia.agent";
 
+/// Build the encrypted-store fallback key for a credential.
+/// Prefixed with `_kc_fallback_` so it never collides with normal config keys.
+fn fallback_key(cred_key: &str) -> String {
+    format!("_kc_fallback_{}", cred_key)
+}
+
 /// Errors for configuration operations
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -95,6 +101,7 @@ impl AppConfig {
             .unwrap_or_else(|_| {
                 // fallback pour le test / usage sans Tauri
                 let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("."));
                 home.join(".raguia")
@@ -115,19 +122,24 @@ impl AppConfig {
 }
 
 fn dirs_documents() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let candidates = [
-        PathBuf::from(&home).join("Documents"),
-        PathBuf::from(&home).join("Library/Documents"),
-    ];
-    candidates
-        .iter()
-        .find(|p| p.exists())
-        .or_else(|| {
-            // fallback : retourner le premier même s'il n'existe pas
-            candidates.first()
-        })
-        .cloned()
+    #[cfg(target_os = "windows")]
+    {
+        let userprofile = std::env::var("USERPROFILE").ok()?;
+        Some(PathBuf::from(userprofile).join("Documents"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").ok()?;
+        let candidates = [
+            PathBuf::from(&home).join("Documents"),
+            PathBuf::from(&home).join("Library/Documents"),
+        ];
+        candidates
+            .iter()
+            .find(|p| p.exists())
+            .or_else(|| candidates.first())
+            .cloned()
+    }
 }
 
 /// Manages application configuration and secrets.
@@ -169,25 +181,74 @@ impl Manager {
 
     // ─── Keychain helpers ─────────────────────────────────────
 
+    /// Try the OS keychain/credential manager. On failure (locked vault,
+    /// restricted service, etc.), transparently fall back to the encrypted
+    /// Tauri store so the agent remains functional.
     fn keychain_set(&self, key: &str, value: &str) -> Result<(), ConfigError> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, key)
-            .map_err(|e| ConfigError::Store(format!("Keychain entry: {}", e)))?;
-        entry
-            .set_password(value)
-            .map_err(|e| ConfigError::Store(format!("Keychain set: {}", e)))
+        match keyring::Entry::new(KEYCHAIN_SERVICE, key) {
+            Ok(entry) => match entry.set_password(value) {
+                Ok(()) => {
+                    // Also clear the fallback copy
+                    if let Ok(store) = self.store() {
+                        store.delete(&fallback_key(key));
+                        let _ = store.save();
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Keychain set failed for {} ({}), using encrypted store fallback",
+                        key,
+                        e
+                    );
+                    self.store_fallback_set(key, value)
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "Keychain entry init failed for {} ({}), using encrypted store fallback",
+                    key,
+                    e
+                );
+                self.store_fallback_set(key, value)
+            }
+        }
     }
 
     fn keychain_get(&self, key: &str) -> Option<String> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, key).ok()?;
-        entry.get_password().ok()
+        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, key) {
+            if let Ok(v) = entry.get_password() {
+                return Some(v);
+            }
+        }
+        // Bug 3: fallback to encrypted store if keychain unavailable
+        self.store_fallback_get(key)
     }
 
     fn keychain_delete(&self, key: &str) -> Result<(), ConfigError> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, key)
-            .map_err(|e| ConfigError::Store(format!("Keychain entry: {}", e)))?;
-        entry
-            .delete_password()
-            .map_err(|e| ConfigError::Store(format!("Keychain delete: {}", e)))
+        // Try to clean both locations; ignore keychain errors so we still
+        // wipe the fallback copy.
+        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, key) {
+            let _ = entry.delete_password();
+        }
+        if let Ok(store) = self.store() {
+            store.delete(&fallback_key(key));
+            let _ = store.save();
+        }
+        Ok(())
+    }
+
+    fn store_fallback_set(&self, key: &str, value: &str) -> Result<(), ConfigError> {
+        let store = self.store()?;
+        store.set(&fallback_key(key), serde_json::json!(value));
+        store.save().map_err(|e| ConfigError::Store(e.to_string()))
+    }
+
+    fn store_fallback_get(&self, key: &str) -> Option<String> {
+        let store = self.store().ok()?;
+        store
+            .get(&fallback_key(key))
+            .and_then(|v| v.as_str().map(String::from))
     }
 
     // ─── Auth token (macOS Keychain) ──────────────────────────

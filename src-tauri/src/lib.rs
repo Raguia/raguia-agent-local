@@ -33,6 +33,9 @@ pub struct AppState {
     pub watcher: Arc<tokio::sync::Mutex<watcher::Watcher>>,
     pub wake_signal: Arc<tokio::sync::Notify>,
     pub stop_signal: Arc<AtomicBool>,
+    pub force_sync: Arc<AtomicBool>,
+    /// Signaled by the engine when it has fully stopped (allows graceful exit).
+    pub engine_stopped: Arc<tokio::sync::Notify>,
 }
 
 /// Tauri command: health check
@@ -57,17 +60,48 @@ fn get_stats(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, Str
 /// Tauri command: trigger a force sync
 #[tauri::command]
 fn sync_now(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.force_sync.store(true, std::sync::atomic::Ordering::Release);
     state.wake_signal.notify_one();
     tracing::info!("Force sync triggered");
     Ok(())
 }
 
-/// Tauri command: return the user's home directory path
+/// Tauri command: return the user's home directory as a normalized string.
+///
+/// On Windows, `USERPROFILE` is checked first (canonical); `HOME` is only used
+/// as a fallback (Git Bash / MSYS may set it incorrectly).
+/// Returns a path with platform-native separators.
 #[tauri::command]
 fn get_home_dir() -> String {
-    std::env::var("HOME")
+    #[cfg(target_os = "windows")]
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "C:\\Users".into());
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/home".into())
+        .unwrap_or_else(|_| "/Users".into());
+
+    let pb = std::path::PathBuf::from(home);
+    pb.to_string_lossy().to_string()
+}
+
+/// Tauri command: return the current OS kind for the wizard UI.
+/// Avoids the deprecated `navigator.platform` Web API.
+#[tauri::command]
+fn get_os_kind() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "linux"
+    }
 }
 
 /// Tauri command: authenticate and save configuration.
@@ -139,19 +173,39 @@ async fn login(
     }))
 }
 
+/// Cached decoded tray icons (decoded once, reused on every status update).
+fn tray_icon_cache() -> &'static std::sync::OnceLock<std::collections::HashMap<&'static str, Image<'static>>> {
+    static CACHE: std::sync::OnceLock<std::collections::HashMap<&'static str, Image<'static>>> = std::sync::OnceLock::new();
+    &CACHE
+}
+
+fn get_cached_icon(status: &str) -> Option<Image<'static>> {
+    let cache = tray_icon_cache();
+    let map = cache.get_or_init(|| {
+        let mut m = std::collections::HashMap::new();
+        for (key, bytes) in [
+            ("idle", include_bytes!("../icons/tray-idle-22.png") as &[u8]),
+            ("syncing", include_bytes!("../icons/tray-syncing-22.png") as &[u8]),
+            ("error", include_bytes!("../icons/tray-error-22.png") as &[u8]),
+            ("disconnected", include_bytes!("../icons/tray-disconnected-22.png") as &[u8]),
+        ] {
+            if let Ok(img) = image::load_from_memory(bytes) {
+                let rgba = img.to_rgba8();
+                let (w, h) = img.dimensions();
+                m.insert(key, Image::new_owned(rgba.into_raw(), w, h));
+            }
+        }
+        m
+    });
+    map.get(status).cloned()
+}
+
 /// Update the tray icon and tooltip based on sync status.
 ///
-/// Decodes the correct PNG icon from embedded assets and sets it on the tray.
+/// Uses a once-initialized cache to avoid re-decoding the same PNG icon
+/// on every status change.
 /// Status values: "idle", "syncing", "error", "disconnected"
 pub fn set_tray_icon(app: &tauri::AppHandle, status: &str) {
-    let icon_bytes: &[u8] = match status {
-        "idle" => include_bytes!("../icons/tray-idle-22.png") as &[u8],
-        "syncing" => include_bytes!("../icons/tray-syncing-22.png") as &[u8],
-        "error" => include_bytes!("../icons/tray-error-22.png") as &[u8],
-        "disconnected" => include_bytes!("../icons/tray-disconnected-22.png") as &[u8],
-        _ => return,
-    };
-
     let tooltip = match status {
         "idle" => "Raguia Agent — synchronisé",
         "syncing" => "Raguia Agent — synchronisation en cours…",
@@ -161,11 +215,7 @@ pub fn set_tray_icon(app: &tauri::AppHandle, status: &str) {
     };
 
     if let Some(state) = app.try_state::<AppState>() {
-        // Decode PNG to RGBA using the `image` crate
-        if let Ok(img) = image::load_from_memory(icon_bytes) {
-            let rgba = img.to_rgba8();
-            let (w, h) = img.dimensions();
-            let icon = Image::new_owned(rgba.into_raw(), w, h);
+        if let Some(icon) = get_cached_icon(status) {
             let _ = state.tray.set_icon(Some(icon));
         }
         let _ = state.tray.set_tooltip(Some(tooltip));
@@ -299,9 +349,22 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             if let Some(state) = app.try_state::<AppState>() {
                 state.stop_signal.store(true, Ordering::Release);
                 state.wake_signal.notify_one();
+                // Wait for the engine to finish (bounded to 5s, then force-exit)
+                let app_clone = app.clone();
+                let stopped = state.engine_stopped.clone();
+                std::thread::spawn(move || {
+                    let timeout = std::time::Duration::from_secs(5);
+                    let fut = async {
+                        tokio::time::timeout(timeout, stopped.notified()).await
+                    };
+                    // Block this OS thread (not the Tauri runtime) to wait for the engine.
+                    let _ = tauri::async_runtime::block_on(fut);
+                    tracing::info!("Engine stopped — exiting");
+                    app_clone.exit(0);
+                });
+            } else {
+                app.exit(0);
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            app.exit(0);
         }
         "sync_now" => {
             if let Some(state) = app.try_state::<AppState>() {
@@ -459,43 +522,57 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             tracing::info!("Autostart toggled (was enabled={})", enabled);
         }
         "endpoint" => {
-            let ac = app.clone();
-            std::thread::spawn(move || {
-                let current = ac.try_state::<AppState>()
-                    .and_then(|s| s.config_manager.load_config().ok())
-                    .map(|c| c.api_url).unwrap_or_default();
-                let script = format!(r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#, current);
-                let out = std::process::Command::new("osascript").args(["-e", &script]).output();
-                match out {
-                    Ok(o) => {
-                        let s = String::from_utf8_lossy(&o.stdout);
-                        if !s.contains("button returned:OK") { return; }
-                        let url = s.lines().find_map(|l| l.strip_prefix("text returned:")).unwrap_or("").trim().trim_end_matches('/').to_string();
-                        if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
-                            ac.dialog().message("URL invalide. Doit commencer par http:// ou https://").title("Erreur")
-                                .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
-                        }
-                        if let Some(st) = ac.try_state::<AppState>() {
-                            let mut cfg = match st.config_manager.load_config() {
-                                Ok(c) => c, Err(e) => {
-                                    ac.dialog().message(format!("Erreur config: {}", e)).title("Erreur")
-                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
-                                }
-                            };
-                            cfg.api_url = url.clone();
-                            if let Err(e) = st.config_manager.save_config(&cfg) {
-                                ac.dialog().message(format!("Erreur sauvegarde: {}", e)).title("Erreur")
+            #[cfg(target_os = "macos")]
+            {
+                let ac = app.clone();
+                std::thread::spawn(move || {
+                    let current = ac.try_state::<AppState>()
+                        .and_then(|s| s.config_manager.load_config().ok())
+                        .map(|c| c.api_url).unwrap_or_default();
+                    let script = format!(r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#, current);
+                    let out = std::process::Command::new("osascript").args(["-e", &script]).output();
+                    match out {
+                        Ok(o) => {
+                            let s = String::from_utf8_lossy(&o.stdout);
+                            if !s.contains("button returned:OK") { return; }
+                            let url = s.lines().find_map(|l| l.strip_prefix("text returned:")).unwrap_or("").trim().trim_end_matches('/').to_string();
+                            if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
+                                ac.dialog().message("URL invalide. Doit commencer par http:// ou https://").title("Erreur")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
                             }
-                            st.api_client.set_api_url(&url);
-                            ac.dialog().message(format!("Endpoint changé vers :\n{}", url)).title("Succès")
-                                .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
-                            tracing::info!("API endpoint changed to {}", url);
+                            if let Some(st) = ac.try_state::<AppState>() {
+                                let mut cfg = match st.config_manager.load_config() {
+                                    Ok(c) => c, Err(e) => {
+                                        ac.dialog().message(format!("Erreur config: {}", e)).title("Erreur")
+                                            .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
+                                    }
+                                };
+                                cfg.api_url = url.clone();
+                                if let Err(e) = st.config_manager.save_config(&cfg) {
+                                    ac.dialog().message(format!("Erreur sauvegarde: {}", e)).title("Erreur")
+                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
+                                }
+                                st.api_client.set_api_url(&url);
+                                ac.dialog().message(format!("Endpoint changé vers :\n{}", url)).title("Succès")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                                tracing::info!("API endpoint changed to {}", url);
+                            }
                         }
+                        Err(e) => tracing::error!("Endpoint dialog failed: {}", e),
                     }
-                    Err(e) => tracing::error!("Endpoint dialog failed: {}", e),
-                }
-            });
+                });
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let ac = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    ac.dialog()
+                        .message("Modifiez l'endpoint API dans la configuration directement.")
+                        .title("Changer l'endpoint")
+                        .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                        .show(|_| {});
+                });
+            }
         }
         "reload_config" => {
             if let Some(state) = app.try_state::<AppState>() {
@@ -539,7 +616,12 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                     .set_file_name("raguia-agent.log")
                     .blocking_save_file();
                 if let Some(p) = path {
-                    match std::fs::write(p.as_path().unwrap_or_else(|| std::path::Path::new("/dev/null")), &logs) {
+                    let save_path = p.as_path().map(|p| p.to_path_buf()).unwrap_or_else(|| {
+                        let mut tmp = std::env::temp_dir();
+                        tmp.push("raguia-agent-export.log");
+                        tmp
+                    });
+                    match std::fs::write(&save_path, &logs) {
                         Ok(_) => ac.dialog().message("Logs exportés ✓").title("Succès")
                             .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {}),
                         Err(e) => ac.dialog().message(format!("Erreur écriture: {}", e)).title("Erreur")
@@ -614,6 +696,21 @@ pub fn run() {
             // ── Initialize core services ──
             let config_manager = Arc::new(config::Manager::new(app.handle()));
 
+            // ── Initialize persistent log file (best-effort) ──
+            {
+                let log_dir = config_manager
+                    .load_config()
+                    .ok()
+                    .map(|c| c.app_data_dir(app.handle()))
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let log_path = log_dir.join("raguia-agent.log");
+                if let Err(e) = LOG_CAPTURE.init_file(&log_path) {
+                    tracing::warn!("Failed to init log file at {:?}: {}", log_path, e);
+                } else {
+                    tracing::info!("Log file: {:?}", log_path);
+                }
+            }
+
             // ── Force admin mode from env ──
             if std::env::var("RAGUIA_ADMIN").as_deref() == Ok("1") {
                 let mut cfg = config_manager.load_config().unwrap_or_default();
@@ -651,6 +748,8 @@ pub fn run() {
             // ── Sync engine signals ──
             let wake_signal = Arc::new(tokio::sync::Notify::new());
             let stop_signal = Arc::new(AtomicBool::new(false));
+            let force_sync = Arc::new(AtomicBool::new(false));
+            let engine_stopped = Arc::new(tokio::sync::Notify::new());
 
             // ── Check if configured → show wizard or start engine ──
             let is_configured = config_manager
@@ -682,17 +781,21 @@ pub fn run() {
                 watcher: watcher.clone(),
                 wake_signal: wake_signal.clone(),
                 stop_signal: stop_signal.clone(),
+                force_sync: force_sync.clone(),
+                engine_stopped: engine_stopped.clone(),
             });
 
             if is_configured {
                 // Start the sync engine background task
                 let engine_wake = wake_signal.clone();
                 let engine_stop = stop_signal.clone();
+                let engine_force = force_sync.clone();
                 let engine_app = app.handle().clone();
                 let engine_config = config_manager.clone();
                 let engine_api = api_client.clone();
                 let engine_queue = queue_store.clone();
                 let engine_watcher = watcher.clone();
+                let engine_done = engine_stopped.clone();
 
                 tauri::async_runtime::spawn(async move {
                     engine::run_sync_loop(
@@ -703,6 +806,8 @@ pub fn run() {
                         engine_watcher,
                         engine_wake,
                         engine_stop,
+                        engine_force,
+                        engine_done,
                     )
                     .await;
                 });
@@ -728,6 +833,7 @@ pub fn run() {
             sync_now,
             login,
             get_home_dir,
+            get_os_kind,
             get_logs,
             toggle_admin_mode,
             is_admin_mode,
@@ -746,9 +852,12 @@ fn decode_png_icon(status: &str) -> Option<(Vec<u8>, u32, u32)> {
         "disconnected" => include_bytes!("../icons/tray-disconnected-22.png") as &[u8],
         _ => return None,
     };
-
     let img = image::load_from_memory(bytes).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = img.dimensions();
     Some((rgba.into_raw(), w, h))
 }
+
+#[allow(dead_code)]
+#[inline]
+fn icon_unused<T>(_: T) {}
