@@ -17,14 +17,24 @@
   const messageEl = document.getElementById("message");
   const browseBtn = document.getElementById("browseBtn");
   const watchDir = document.getElementById("watchDir");
+  const apiUrlInput = document.getElementById("apiUrl");
+  const slugInput = document.getElementById("slug");
+  const passwordInput = document.getElementById("password");
 
   try {
-    const home = await invoke("get_home_dir");
-    const os = await invoke("get_os_kind");
-    const sep = os === "windows" ? "\\" : "/";
-    watchDir.value = home + sep + "Documents" + sep + "RAGUIA";
+    const cfg = await invoke("get_config");
+    if (cfg.api_url) apiUrlInput.value = cfg.api_url;
+    if (cfg.client_slug) slugInput.value = cfg.client_slug;
+    if (cfg.watch_dir) watchDir.value = cfg.watch_dir;
   } catch {
-    watchDir.value = "~/Documents/RAGUIA";
+    try {
+      const home = await invoke("get_home_dir");
+      const os = await invoke("get_os_kind");
+      const sep = os === "windows" ? "\\" : "/";
+      watchDir.value = home + sep + "Documents" + sep + "RAGUIA";
+    } catch {
+      watchDir.value = "~/Documents/RAGUIA";
+    }
   }
 
   browseBtn.addEventListener("click", async () => {
@@ -46,9 +56,9 @@
     e.preventDefault();
     setMessage("", "");
 
-    const apiUrl = document.getElementById("apiUrl").value.trim();
-    const slug = document.getElementById("slug").value.trim();
-    const password = document.getElementById("password").value.trim();
+    const apiUrl = apiUrlInput.value.trim();
+    const slug = slugInput.value.trim();
+    const password = passwordInput.value;
     const watchDirVal = watchDir.value.trim();
 
     if (!apiUrl || !slug || !password) {

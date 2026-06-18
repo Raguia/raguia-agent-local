@@ -20,10 +20,16 @@ const MAX_UNSTABLE_RETRIES: u32 = 20;
 pub enum TrayStatus {
     Idle,
     Syncing,
-    Error { message: String },
-    Warning { message: String },
+    Error {
+        message: String,
+    },
+    Warning {
+        message: String,
+    },
     #[allow(dead_code)]
-    UpdateAvailable { version: String },
+    UpdateAvailable {
+        version: String,
+    },
     Stopped,
 }
 
@@ -65,7 +71,11 @@ fn check_token_expiry(token: &str) -> TokenHealth {
 
     let payload_b64 = parts[1];
     // Add padding
-    let padded = format!("{}{}", payload_b64, "=".repeat((4 - payload_b64.len() % 4) % 4));
+    let padded = format!(
+        "{}{}",
+        payload_b64,
+        "=".repeat((4 - payload_b64.len() % 4) % 4)
+    );
 
     let decoded = match base64::engine::general_purpose::URL_SAFE.decode(padded.as_bytes()) {
         Ok(d) => d,
@@ -125,10 +135,7 @@ fn get_local_folder_size(root: &Path) -> u64 {
                 if path.is_dir() {
                     scan_dir(&path, total);
                 } else if path.is_file() {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if !name.starts_with('.') && !name.starts_with("~$") && !name.ends_with(".tmp")
                     {
                         if let Ok(meta) = entry.metadata() {
@@ -146,6 +153,10 @@ fn get_local_folder_size(root: &Path) -> u64 {
 /// Minimum age in seconds before a queue entry is eligible for processing.
 /// Acts as a debounce to avoid picking up files while the watcher is still settling.
 const QUEUE_MIN_AGE_SECS: f64 = 5.0;
+
+fn auto_update_interval(hours: u64) -> Duration {
+    Duration::from_secs(hours.max(1).saturating_mul(3600))
+}
 
 // ─── Main sync loop ──────────────────────────────────────────
 
@@ -171,7 +182,12 @@ pub async fn run_sync_loop(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Failed to load config in sync engine: {}", e);
-            emit_status(&app_handle, &TrayStatus::Error { message: format!("Erreur de configuration: {}", e) });
+            emit_status(
+                &app_handle,
+                &TrayStatus::Error {
+                    message: format!("Erreur de configuration: {}", e),
+                },
+            );
             engine_stopped.notify_waiters();
             return;
         }
@@ -193,7 +209,12 @@ pub async fn run_sync_loop(
         let mut w = watcher.lock().await;
         if let Err(e) = w.start() {
             tracing::error!("Failed to start file watcher: {}", e);
-            emit_status(&app_handle, &TrayStatus::Error { message: format!("Watcher: {}", e) });
+            emit_status(
+                &app_handle,
+                &TrayStatus::Error {
+                    message: format!("Watcher: {}", e),
+                },
+            );
         }
     }
 
@@ -202,8 +223,8 @@ pub async fn run_sync_loop(
     let mut max_files_per_cycle = cfg.max_files_per_cycle;
     let mut burst_threshold = cfg.burst_threshold;
     let mut sync_cooldown_secs = cfg.sync_cooldown_secs;
-    let poll_interval = Duration::from_secs(cfg.poll_interval_secs.max(5));
-    let mut auto_update_check = Duration::from_secs(cfg.auto_update_check_hours * 3600);
+    let mut poll_interval_secs = cfg.poll_interval_secs.max(5);
+    let mut auto_update_check = auto_update_interval(cfg.auto_update_check_hours);
     let mut dry_run = cfg.dry_run;
     // Bug A: tracked separately so we can re-apply on config reload
     let mut auto_update_enabled = cfg.auto_update;
@@ -213,24 +234,28 @@ pub async fn run_sync_loop(
 
     // State
     let mut last_cooldown_ts = Instant::now();
-    let mut last_update_check = Instant::now();
+    let mut last_update_check = Instant::now()
+        .checked_sub(auto_update_check)
+        .unwrap_or_else(Instant::now);
     let mut last_401_log = Instant::now();
     let mut last_pending_hint = Instant::now();
     let mut wal_ops_since_checkpoint: u64 = 0;
     let mut config_reload_counter: u64 = 0;
 
-    let mut poll_timer = tokio::time::interval(poll_interval);
+    let mut poll_timer = tokio::time::interval(Duration::from_secs(poll_interval_secs));
     poll_timer.reset(); // Don't fire immediately
 
     emit_status(&app_handle, &TrayStatus::Idle);
 
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        let mut woke = false;
         tokio::select! {
             _ = poll_timer.tick() => {
                 // Normal poll interval
             }
             _ = wake.notified() => {
                 // Force sync requested from tray menu
+                woke = true;
                 tracing::debug!("Sync engine woken by force_sync signal");
                 poll_timer.reset();
             }
@@ -242,7 +267,7 @@ pub async fn run_sync_loop(
 
         // ── Reload config periodically (detect wizard/UI changes) ──
         config_reload_counter += 1;
-        if config_reload_counter % 6 == 0 {
+        if woke || config_reload_counter % 6 == 0 {
             if let Ok(refreshed) = config.load_config() {
                 // Detect changes that affect the running loop
                 let changed = refreshed.api_url != cfg.api_url
@@ -261,33 +286,63 @@ pub async fn run_sync_loop(
                 if changed {
                     tracing::info!("Configuration changed — applying update");
                     let new_root = refreshed.root_path();
-                    if new_root != root {
-                        tracing::warn!("Watch path changed from {:?} to {:?} — restart required", root, new_root);
-                    }
+                    let root_changed = new_root != root;
                     cfg = refreshed;
                     root = cfg.root_path();
                     root_label = cfg.root_folder_name.clone();
+                    api.set_api_url(&cfg.api_url);
                     stability_secs = cfg.stability_secs as f64;
                     max_files_per_cycle = cfg.max_files_per_cycle;
                     burst_threshold = cfg.burst_threshold;
                     sync_cooldown_secs = cfg.sync_cooldown_secs;
-                    // poll_interval change requires restarting the tokio interval;
-                    // log it for awareness, but don't try to apply mid-loop.
-                    if poll_interval.as_secs() != cfg.poll_interval_secs.max(5) {
+                    let new_poll_interval_secs = cfg.poll_interval_secs.max(5);
+                    if poll_interval_secs != new_poll_interval_secs {
                         tracing::info!(
-                            "Poll interval change detected ({}s → {}s) — restart required to apply",
-                            poll_interval.as_secs(),
-                            cfg.poll_interval_secs,
+                            "Poll interval changed ({}s → {}s)",
+                            poll_interval_secs,
+                            new_poll_interval_secs,
                         );
+                        poll_interval_secs = new_poll_interval_secs;
+                        poll_timer = tokio::time::interval(Duration::from_secs(poll_interval_secs));
+                        poll_timer.reset();
                     }
-                    auto_update_check = Duration::from_secs(cfg.auto_update_check_hours * 3600);
+                    auto_update_check = auto_update_interval(cfg.auto_update_check_hours);
                     dry_run = cfg.dry_run;
                     auto_update_enabled = cfg.auto_update; // Bug A
+                    if root_changed {
+                        if let Err(e) = std::fs::create_dir_all(&root) {
+                            tracing::error!(
+                                "Failed to create new root directory {:?}: {}",
+                                root,
+                                e
+                            );
+                            emit_status(
+                                &app_handle,
+                                &TrayStatus::Error {
+                                    message: format!("Dossier inaccessible: {}", root.display()),
+                                },
+                            );
+                        } else {
+                            let mut w = watcher.lock().await;
+                            match w.reload() {
+                                Ok(()) => tracing::info!("Watcher reloaded on {:?}", root),
+                                Err(e) => {
+                                    tracing::error!("Watcher reload failed: {}", e);
+                                    emit_status(
+                                        &app_handle,
+                                        &TrayStatus::Error {
+                                            message: format!("Watcher: {}", e),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             // Clean up orphaned 'syncing' entries (left after a crash)
-            if let Ok(n) = queue.reset_stuck() {
+            if let Ok(n) = queue.reset_syncing() {
                 if n > 0 {
                     tracing::info!("{} entrée(s) orpheline(s) réinitialisée(s)", n);
                 }
@@ -308,9 +363,12 @@ pub async fn run_sync_loop(
                             tracing::error!("Échec renouvellement token: {}", e);
                             // Bug 13: surface a real Error status so the user
                             // sees the red tray icon and is prompted to reconnect.
-                            emit_status(&app_handle, &TrayStatus::Error {
-                                message: "Session expirée — reconnectez-vous".into(),
-                            });
+                            emit_status(
+                                &app_handle,
+                                &TrayStatus::Error {
+                                    message: "Session expirée — reconnectez-vous".into(),
+                                },
+                            );
                         }
                     }
                 }
@@ -332,8 +390,14 @@ pub async fn run_sync_loop(
             match app_handle.updater() {
                 Ok(u) => match u.check().await {
                     Ok(Some(update)) => {
-                        tracing::info!("Auto-update v{} → downloading + installing", update.version);
-                        match update.download_and_install(|_chunk, _total| {}, || {}).await {
+                        tracing::info!(
+                            "Auto-update v{} → downloading + installing",
+                            update.version
+                        );
+                        match update
+                            .download_and_install(|_chunk, _total| {}, || {})
+                            .await
+                        {
                             Ok(_) => {
                                 tracing::info!("Auto-update installed — exiting for restart");
                                 app_handle.exit(0);
@@ -377,7 +441,10 @@ pub async fn run_sync_loop(
                                     // Reset stuck files so they can retry
                                     if let Ok(n) = queue.reset_stuck() {
                                         if n > 0 {
-                                            tracing::info!("{} fichier(s) débloqués après reconnexion", n);
+                                            tracing::info!(
+                                                "{} fichier(s) débloqués après reconnexion",
+                                                n
+                                            );
                                         }
                                     }
 
@@ -396,15 +463,22 @@ pub async fn run_sync_loop(
                                 }
                             }
                         } else {
-                            emit_status(&app_handle, &TrayStatus::Error {
-                                message: "Session invalide — reconnectez-vous via l'icone".into(),
-                            });
+                            emit_status(
+                                &app_handle,
+                                &TrayStatus::Error {
+                                    message: "Session invalide — reconnectez-vous via l'icone"
+                                        .into(),
+                                },
+                            );
                             None
                         }
                     } else {
-                        emit_status(&app_handle, &TrayStatus::Error {
-                            message: "Session invalide — reconnectez-vous via l'icone".into(),
-                        });
+                        emit_status(
+                            &app_handle,
+                            &TrayStatus::Error {
+                                message: "Session invalide — reconnectez-vous via l'icone".into(),
+                            },
+                        );
                         None
                     }
                 } else {
@@ -416,16 +490,23 @@ pub async fn run_sync_loop(
                     || detail.to_lowercase().contains("agent")
                 {
                     tracing::error!("Agent local désactivé par l'administrateur: {}", detail);
-                    emit_status(&app_handle, &TrayStatus::Error {
-                        message: "Agent local désactivé — contactez votre administrateur".into(),
-                    });
+                    emit_status(
+                        &app_handle,
+                        &TrayStatus::Error {
+                            message: "Agent local désactivé — contactez votre administrateur"
+                                .into(),
+                        },
+                    );
                     // Stop the engine
                     break;
                 } else {
                     tracing::warn!("Accès refusé (403): {}", detail);
-                    emit_status(&app_handle, &TrayStatus::Warning {
-                        message: format!("Accès refusé (403): {}", detail),
-                    });
+                    emit_status(
+                        &app_handle,
+                        &TrayStatus::Warning {
+                            message: format!("Accès refusé (403): {}", detail),
+                        },
+                    );
                     None
                 }
             }
@@ -437,6 +518,16 @@ pub async fn run_sync_loop(
 
         // Bug B: capture quota from any successful sync_status (not just server_requested)
         if let Some(ref st) = sync_status {
+            if st.local_agent_enabled == Some(false) {
+                tracing::error!("Agent local désactivé par l'administrateur");
+                emit_status(
+                    &app_handle,
+                    &TrayStatus::Error {
+                        message: "Agent local désactivé — contactez votre administrateur".into(),
+                    },
+                );
+                break;
+            }
             if let Some(q) = st.max_storage_bytes {
                 last_known_quota = Some(q);
             }
@@ -470,13 +561,20 @@ pub async fn run_sync_loop(
         // Manual force-sync bypasses cooldown
         let manual_force = force_sync.swap(false, Ordering::Acquire);
 
-        let should_sync = manual_force || server_requested || pending_delete > 0 || (cooldown_ok && burst);
+        let should_sync =
+            manual_force || server_requested || pending_delete > 0 || (cooldown_ok && burst);
 
         if stuck > 0 {
-            tracing::warn!("{} fichier(s) bloqué(s) — clic droit → Réinitialiser", stuck);
-            emit_status(&app_handle, &TrayStatus::Warning {
-                message: format!("{} fichier(s) bloqué(s)", stuck),
-            });
+            tracing::warn!(
+                "{} fichier(s) bloqué(s) — clic droit → Réinitialiser",
+                stuck
+            );
+            emit_status(
+                &app_handle,
+                &TrayStatus::Warning {
+                    message: format!("{} fichier(s) bloqué(s)", stuck),
+                },
+            );
         }
 
         // ── 6. Run sync cycle ──
@@ -493,7 +591,10 @@ pub async fn run_sync_loop(
 
             // Bug B: quota now applied to any sync, not just server_requested
             let quota = if server_requested {
-                sync_status.as_ref().and_then(|st| st.max_storage_bytes).or(last_known_quota)
+                sync_status
+                    .as_ref()
+                    .and_then(|st| st.max_storage_bytes)
+                    .or(last_known_quota)
             } else {
                 last_known_quota
             };
@@ -550,9 +651,12 @@ pub async fn run_sync_loop(
                 emit_status(&app_handle, &TrayStatus::Idle);
             } else {
                 let err_msg = metrics.errors.join("; ");
-                emit_status(&app_handle, &TrayStatus::Warning {
-                    message: err_msg.chars().take(80).collect(),
-                });
+                emit_status(
+                    &app_handle,
+                    &TrayStatus::Warning {
+                        message: err_msg.chars().take(80).collect(),
+                    },
+                );
             }
         } else if pending == 0 && stuck == 0 {
             emit_status(&app_handle, &TrayStatus::Idle);
@@ -618,7 +722,11 @@ async fn run_cycle(
     };
 
     // Pop batch with stability filter to avoid uploading files still being written
-    let batch = match queue.pop_batch(max_files_per_cycle, QUEUE_MIN_AGE_SECS, MAX_TRIES_BEFORE_STUCK) {
+    let batch = match queue.pop_batch(
+        max_files_per_cycle,
+        QUEUE_MIN_AGE_SECS,
+        MAX_TRIES_BEFORE_STUCK,
+    ) {
         Ok(b) => b,
         Err(e) => {
             tracing::error!("pop_batch failed: {}", e);
@@ -631,34 +739,8 @@ async fn run_cycle(
     }
 
     // Separate delete items and upload items
-    let delete_items: Vec<_> = batch
-        .iter()
-        .filter(|e| e.event_type == "deleted")
-        .collect();
-    let upload_items: Vec<_> = batch
-        .iter()
-        .filter(|e| e.event_type != "deleted")
-        .collect();
-
-    // Check quota for uploads
-    if let Some(limit) = quota {
-        if !upload_items.is_empty() {
-            let current_size = get_local_folder_size(root);
-            if current_size > limit {
-                let msg = format!(
-                    "Quota dépassé: taille locale ({} Mo) > limite ({} Mo)",
-                    current_size / 1024 / 1024,
-                    limit / 1024 / 1024,
-                );
-                tracing::error!("{}", msg);
-                metrics.errors.push(msg);
-                emit_status(app_handle, &TrayStatus::Error {
-                    message: "Quota dépassé".into(),
-                });
-                return metrics;
-            }
-        }
-    }
+    let delete_items: Vec<_> = batch.iter().filter(|e| e.event_type == "deleted").collect();
+    let upload_items: Vec<_> = batch.iter().filter(|e| e.event_type != "deleted").collect();
 
     // ── Process deletions ──
     for item in &delete_items {
@@ -688,9 +770,39 @@ async fn run_cycle(
             }
             Err(e) => {
                 let err = e.to_string();
-                tracing::error!("Suppression distante impossible pour {}: {}", item.rel_path, err);
+                tracing::error!(
+                    "Suppression distante impossible pour {}: {}",
+                    item.rel_path,
+                    err
+                );
                 let _ = queue.mark_error(&item.rel_path, &err);
                 metrics.errors.push(err);
+            }
+        }
+    }
+
+    // Check quota for uploads after deletions so cleanup is never starved by quota errors.
+    if let Some(limit) = quota {
+        if !upload_items.is_empty() {
+            let current_size = get_local_folder_size(root);
+            if current_size > limit {
+                let msg = format!(
+                    "Quota dépassé: taille locale ({} Mo) > limite ({} Mo)",
+                    current_size / 1024 / 1024,
+                    limit / 1024 / 1024,
+                );
+                tracing::error!("{}", msg);
+                metrics.errors.push(msg);
+                for item in &upload_items {
+                    let _ = queue.mark_error(&item.rel_path, "Quota dépassé");
+                }
+                emit_status(
+                    app_handle,
+                    &TrayStatus::Error {
+                        message: "Quota dépassé".into(),
+                    },
+                );
+                return metrics;
             }
         }
     }
@@ -712,7 +824,10 @@ async fn run_cycle(
         // Empty file (in-progress write) — don't mark done, wait for next cycle
         let file_size = match std::fs::metadata(&p) {
             Ok(m) if m.len() == 0 => {
-                tracing::debug!("Fichier vide (écriture en cours ?), différé: {}", item.rel_path);
+                tracing::debug!(
+                    "Fichier vide (écriture en cours ?), différé: {}",
+                    item.rel_path
+                );
                 // Bug E: cap re-enqueues for files stuck at 0 bytes
                 match queue.bump_unstable(&item.rel_path) {
                     Ok(n) if n >= MAX_UNSTABLE_RETRIES => {
@@ -748,7 +863,10 @@ async fn run_cycle(
 
         // Check file stability (wait for writes to finish)
         if !is_file_stable(&p, stability_secs) {
-            tracing::debug!("Fichier instable (modifié récemment), différé: {}", item.rel_path);
+            tracing::debug!(
+                "Fichier instable (modifié récemment), différé: {}",
+                item.rel_path
+            );
             // Bug E: cap infinite re-enqueue loops for files that are perpetually
             // being written. After MAX_UNSTABLE_RETRIES skips, mark as failed
             // so the user sees the stuck badge and can take action.
@@ -804,7 +922,11 @@ async fn run_cycle(
             // Log server status
             if !resp.results.is_empty() {
                 for result in &resp.results {
-                    tracing::debug!("Upload result: {} - {}", result.status, result.document_id.as_deref().unwrap_or("-"));
+                    tracing::debug!(
+                        "Upload result: {} - {}",
+                        result.status,
+                        result.document_id.as_deref().unwrap_or("-")
+                    );
                 }
             }
         }
@@ -815,9 +937,12 @@ async fn run_cycle(
             for meta in &metas_ok {
                 let _ = queue.mark_error(&meta.relative_path, &err);
             }
-            emit_status(app_handle, &TrayStatus::Error {
-                message: "Session invalide (401) — reconnectez-vous".into(),
-            });
+            emit_status(
+                app_handle,
+                &TrayStatus::Error {
+                    message: "Session invalide (401) — reconnectez-vous".into(),
+                },
+            );
         }
         Err(e) => {
             let err = e.to_string();
@@ -863,7 +988,12 @@ fn apply_remote_deletions(
             Ok(resolved) => {
                 let resolved_norm = strip_unc_prefix(&resolved);
                 if !resolved_norm.starts_with(&canonical_root_norm) {
-                    tracing::warn!("Remote deletion path traversal blocked: {} (resolved={:?}, root={:?})", rel, resolved, canonical_root);
+                    tracing::warn!(
+                        "Remote deletion path traversal blocked: {} (resolved={:?}, root={:?})",
+                        rel,
+                        resolved,
+                        canonical_root
+                    );
                     failed += 1;
                     continue;
                 }

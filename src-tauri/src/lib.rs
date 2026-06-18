@@ -11,6 +11,7 @@ mod log_capture;
 mod queue;
 mod watcher;
 
+use image::GenericImageView;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use tauri::{
@@ -19,9 +20,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
-use image::GenericImageView;
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
 
 /// Shared application state accessible from Tauri commands and tray handlers.
@@ -34,6 +34,7 @@ pub struct AppState {
     pub wake_signal: Arc<tokio::sync::Notify>,
     pub stop_signal: Arc<AtomicBool>,
     pub force_sync: Arc<AtomicBool>,
+    pub engine_running: Arc<AtomicBool>,
     /// Signaled by the engine when it has fully stopped (allows graceful exit).
     pub engine_stopped: Arc<tokio::sync::Notify>,
 }
@@ -60,10 +61,26 @@ fn get_stats(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, Str
 /// Tauri command: trigger a force sync
 #[tauri::command]
 fn sync_now(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.force_sync.store(true, std::sync::atomic::Ordering::Release);
+    state
+        .force_sync
+        .store(true, std::sync::atomic::Ordering::Release);
     state.wake_signal.notify_one();
     tracing::info!("Force sync triggered");
     Ok(())
+}
+
+/// Tauri command: return non-sensitive configuration for the wizard.
+#[tauri::command]
+fn get_config(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cfg = state
+        .config_manager
+        .load_config()
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "api_url": cfg.api_url,
+        "client_slug": cfg.client_slug,
+        "watch_dir": cfg.root_path().to_string_lossy(),
+    }))
 }
 
 /// Tauri command: return the user's home directory as a normalized string.
@@ -104,6 +121,93 @@ fn get_os_kind() -> &'static str {
     }
 }
 
+fn expand_tilde_path(raw: &str) -> std::path::PathBuf {
+    let trimmed = raw.trim();
+    let home = || {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .ok()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .ok()
+        }
+    };
+
+    if trimmed == "~" {
+        return home()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| ".".into());
+    }
+    if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
+        if let Some(home) = home() {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(trimmed)
+}
+
+fn watch_parent_from_selection(selected: &str, root_folder_name: &str) -> std::path::PathBuf {
+    let selected = expand_tilde_path(selected);
+    let ends_with_root = selected
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case(root_folder_name))
+        .unwrap_or(false);
+
+    if ends_with_root {
+        selected
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf()
+    } else {
+        selected
+    }
+}
+
+fn start_sync_engine(app: &tauri::AppHandle, state: &AppState) {
+    if state.engine_running.swap(true, Ordering::AcqRel) {
+        state.wake_signal.notify_one();
+        return;
+    }
+
+    state.stop_signal.store(false, Ordering::Release);
+    let engine_wake = state.wake_signal.clone();
+    let engine_stop = state.stop_signal.clone();
+    let engine_force = state.force_sync.clone();
+    let engine_running = state.engine_running.clone();
+    let engine_app = app.clone();
+    let engine_config = state.config_manager.clone();
+    let engine_api = state.api_client.clone();
+    let engine_queue = state.queue_store.clone();
+    let engine_watcher = state.watcher.clone();
+    let engine_done = state.engine_stopped.clone();
+
+    tauri::async_runtime::spawn(async move {
+        engine::run_sync_loop(
+            engine_app,
+            engine_config,
+            engine_api,
+            engine_queue,
+            engine_watcher,
+            engine_wake,
+            engine_stop,
+            engine_force,
+            engine_done,
+        )
+        .await;
+        engine_running.store(false, Ordering::Release);
+    });
+}
+
 /// Tauri command: authenticate and save configuration.
 ///
 /// Called by the wizard HTML on first launch or reconnection.
@@ -117,21 +221,30 @@ async fn login(
     watch_dir: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    // Save configuration
-    let mut cfg = state.config_manager.load_config().unwrap_or_default();
-    cfg.api_url = api_url.trim_end_matches('/').to_string();
-    cfg.client_slug = slug.clone();
-    if let Some(dir) = watch_dir.filter(|d| !d.is_empty()) {
-        cfg.watch_parent = std::path::PathBuf::from(dir);
+    let api_url = api_url.trim().trim_end_matches('/').to_string();
+    let parsed_url = reqwest::Url::parse(&api_url)
+        .map_err(|_| "URL du portail invalide. Exemple: https://raguia.example".to_string())?;
+    if !matches!(parsed_url.scheme(), "http" | "https") || parsed_url.host_str().is_none() {
+        return Err("URL du portail invalide. Elle doit commencer par http:// ou https://".into());
     }
-    state
-        .config_manager
-        .save_config(&cfg)
-        .map_err(|e| format!("Erreur sauvegarde config : {}", e))?;
-    state
-        .config_manager
-        .set_password(&password)
-        .map_err(|e| format!("Erreur sauvegarde mot de passe : {}", e))?;
+    let slug = slug.trim().to_string();
+    if slug.is_empty() {
+        return Err("Slug client obligatoire.".into());
+    }
+
+    let mut cfg = state.config_manager.load_config().unwrap_or_default();
+    cfg.api_url = parsed_url.as_str().trim_end_matches('/').to_string();
+    cfg.client_slug = slug.clone();
+    if let Some(dir) = watch_dir
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+    {
+        cfg.watch_parent = watch_parent_from_selection(&dir, &cfg.root_folder_name);
+    }
+    cfg = cfg.normalized();
+
+    std::fs::create_dir_all(cfg.root_path())
+        .map_err(|e| format!("Dossier de synchronisation inaccessible : {}", e))?;
 
     // Update API client URL to use the newly configured endpoint
     state.api_client.set_api_url(&cfg.api_url);
@@ -142,6 +255,15 @@ async fn login(
         .login(&slug, &password)
         .await
         .map_err(|e| e.to_string())?;
+
+    state
+        .config_manager
+        .save_config(&cfg)
+        .map_err(|e| format!("Erreur sauvegarde config : {}", e))?;
+    state
+        .config_manager
+        .set_password(&password)
+        .map_err(|e| format!("Erreur sauvegarde mot de passe : {}", e))?;
 
     tracing::info!(
         "Login successful for slug={}, expires_in={:?} days",
@@ -159,7 +281,8 @@ async fn login(
     // Set tray icon to idle
     set_tray_icon(&app, "idle");
 
-    // Wake sync engine so it picks up the new config immediately
+    start_sync_engine(&app, &state);
+    state.force_sync.store(true, Ordering::Release);
     state.wake_signal.notify_one();
 
     // Close wizard window if open
@@ -168,14 +291,15 @@ async fn login(
     }
 
     Ok(serde_json::json!({
-        "token": resp.agent_access_token,
         "expires_in_days": resp.expires_in_days,
     }))
 }
 
 /// Cached decoded tray icons (decoded once, reused on every status update).
-fn tray_icon_cache() -> &'static std::sync::OnceLock<std::collections::HashMap<&'static str, Image<'static>>> {
-    static CACHE: std::sync::OnceLock<std::collections::HashMap<&'static str, Image<'static>>> = std::sync::OnceLock::new();
+fn tray_icon_cache(
+) -> &'static std::sync::OnceLock<std::collections::HashMap<&'static str, Image<'static>>> {
+    static CACHE: std::sync::OnceLock<std::collections::HashMap<&'static str, Image<'static>>> =
+        std::sync::OnceLock::new();
     &CACHE
 }
 
@@ -185,9 +309,18 @@ fn get_cached_icon(status: &str) -> Option<Image<'static>> {
         let mut m = std::collections::HashMap::new();
         for (key, bytes) in [
             ("idle", include_bytes!("../icons/tray-idle-22.png") as &[u8]),
-            ("syncing", include_bytes!("../icons/tray-syncing-22.png") as &[u8]),
-            ("error", include_bytes!("../icons/tray-error-22.png") as &[u8]),
-            ("disconnected", include_bytes!("../icons/tray-disconnected-22.png") as &[u8]),
+            (
+                "syncing",
+                include_bytes!("../icons/tray-syncing-22.png") as &[u8],
+            ),
+            (
+                "error",
+                include_bytes!("../icons/tray-error-22.png") as &[u8],
+            ),
+            (
+                "disconnected",
+                include_bytes!("../icons/tray-disconnected-22.png") as &[u8],
+            ),
         ] {
             if let Ok(img) = image::load_from_memory(bytes) {
                 let rgba = img.to_rgba8();
@@ -278,11 +411,36 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
         .map(|c| c.admin_mode)
         .unwrap_or(false);
 
-    let sync_now = MenuItem::with_id(app, "sync_now", "Synchroniser maintenant", true, None::<&str>)?;
-    let configure = MenuItem::with_id(app, "configure", "Se connecter / Reconnecter", true, None::<&str>)?;
+    let sync_now = MenuItem::with_id(
+        app,
+        "sync_now",
+        "Synchroniser maintenant",
+        true,
+        None::<&str>,
+    )?;
+    let reset_stuck = MenuItem::with_id(
+        app,
+        "reset_stuck",
+        "Réinitialiser les fichiers bloqués",
+        true,
+        None::<&str>,
+    )?;
+    let configure = MenuItem::with_id(
+        app,
+        "configure",
+        "Se connecter / Reconnecter",
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let open = MenuItem::with_id(app, "open", "Ouvrir Raguia", true, None::<&str>)?;
-    let check_updates = MenuItem::with_id(app, "check_updates", "Verifier les mises a jour", true, None::<&str>)?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Verifier les mises a jour",
+        true,
+        None::<&str>,
+    )?;
     let about = MenuItem::with_id(app, "about", "A propos", true, None::<&str>)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, Some("cmd+q"))?;
@@ -291,53 +449,77 @@ fn build_tray_menu(app: &tauri::AppHandle) -> Result<Menu<tauri::Wry>, tauri::Er
         let admin_info = MenuItem::with_id(app, "admin_info", "Info Admin", true, None::<&str>)?;
         let sep_a1 = PredefinedMenuItem::separator(app)?;
         let dry_run = MenuItem::with_id(app, "dry_run", "Dry-Run: ON/OFF", true, None::<&str>)?;
-        let toggle_autostart = MenuItem::with_id(app, "toggle_autostart", "Autostart: ON/OFF", true, None::<&str>)?;
+        let toggle_autostart = MenuItem::with_id(
+            app,
+            "toggle_autostart",
+            "Autostart: ON/OFF",
+            true,
+            None::<&str>,
+        )?;
         let sep_a2 = PredefinedMenuItem::separator(app)?;
-        let endpoint = MenuItem::with_id(app, "endpoint", "Changer l'endpoint", true, None::<&str>)?;
-        let reload_config = MenuItem::with_id(app, "reload_config", "Recharger config", true, None::<&str>)?;
+        let endpoint =
+            MenuItem::with_id(app, "endpoint", "Changer l'endpoint", true, None::<&str>)?;
+        let reload_config =
+            MenuItem::with_id(app, "reload_config", "Recharger config", true, None::<&str>)?;
         let test_api = MenuItem::with_id(app, "test_api", "Tester API", true, None::<&str>)?;
-        let export_logs = MenuItem::with_id(app, "export_logs", "Exporter logs", true, None::<&str>)?;
+        let export_logs =
+            MenuItem::with_id(app, "export_logs", "Exporter logs", true, None::<&str>)?;
         let sep_a3 = PredefinedMenuItem::separator(app)?;
-        let config_path = MenuItem::with_id(app, "config_path", "Chemin config", true, None::<&str>)?;
-        let show_queue = MenuItem::with_id(app, "show_queue", "File d'attente", true, None::<&str>)?;
+        let config_path =
+            MenuItem::with_id(app, "config_path", "Chemin config", true, None::<&str>)?;
+        let show_queue =
+            MenuItem::with_id(app, "show_queue", "File d'attente", true, None::<&str>)?;
 
-        let admin_submenu = Submenu::with_items(app, "Admin", true, &[
-            &admin_info,
-            &sep_a1,
-            &dry_run,
-            &toggle_autostart,
-            &sep_a2,
-            &endpoint,
-            &reload_config,
-            &test_api,
-            &export_logs,
-            &sep_a3,
-            &config_path,
-            &show_queue,
-        ])?;
+        let admin_submenu = Submenu::with_items(
+            app,
+            "Admin",
+            true,
+            &[
+                &admin_info,
+                &sep_a1,
+                &dry_run,
+                &toggle_autostart,
+                &sep_a2,
+                &endpoint,
+                &reload_config,
+                &test_api,
+                &export_logs,
+                &sep_a3,
+                &config_path,
+                &show_queue,
+            ],
+        )?;
 
-        Menu::with_items(app, &[
-            &sync_now,
-            &configure,
-            &separator,
-            &open,
-            &check_updates,
-            &about,
-            &admin_submenu,
-            &separator2,
-            &quit,
-        ])
+        Menu::with_items(
+            app,
+            &[
+                &sync_now,
+                &reset_stuck,
+                &configure,
+                &separator,
+                &open,
+                &check_updates,
+                &about,
+                &admin_submenu,
+                &separator2,
+                &quit,
+            ],
+        )
     } else {
-        Menu::with_items(app, &[
-            &sync_now,
-            &configure,
-            &separator,
-            &open,
-            &check_updates,
-            &about,
-            &separator2,
-            &quit,
-        ])
+        Menu::with_items(
+            app,
+            &[
+                &sync_now,
+                &reset_stuck,
+                &configure,
+                &separator,
+                &open,
+                &check_updates,
+                &about,
+                &separator2,
+                &quit,
+            ],
+        )
     }
 }
 
@@ -347,6 +529,10 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         "quit" => {
             tracing::info!("User requested quit");
             if let Some(state) = app.try_state::<AppState>() {
+                if !state.engine_running.load(Ordering::Acquire) {
+                    app.exit(0);
+                    return;
+                }
                 state.stop_signal.store(true, Ordering::Release);
                 state.wake_signal.notify_one();
                 // Wait for the engine to finish (bounded to 5s, then force-exit)
@@ -354,9 +540,7 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 let stopped = state.engine_stopped.clone();
                 std::thread::spawn(move || {
                     let timeout = std::time::Duration::from_secs(5);
-                    let fut = async {
-                        tokio::time::timeout(timeout, stopped.notified()).await
-                    };
+                    let fut = async { tokio::time::timeout(timeout, stopped.notified()).await };
                     // Block this OS thread (not the Tauri runtime) to wait for the engine.
                     let _ = tauri::async_runtime::block_on(fut);
                     tracing::info!("Engine stopped — exiting");
@@ -368,8 +552,26 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         }
         "sync_now" => {
             if let Some(state) = app.try_state::<AppState>() {
+                state.force_sync.store(true, Ordering::Release);
                 state.wake_signal.notify_one();
                 tracing::info!("Manual sync triggered via tray");
+            }
+        }
+        "reset_stuck" => {
+            if let Some(state) = app.try_state::<AppState>() {
+                let msg = match state.queue_store.reset_stuck() {
+                    Ok(n) => {
+                        state.force_sync.store(true, Ordering::Release);
+                        state.wake_signal.notify_one();
+                        format!("{} fichier(s) remis en attente.", n)
+                    }
+                    Err(e) => format!("Erreur: {}", e),
+                };
+                app.dialog()
+                    .message(&msg)
+                    .title("Fichiers bloqués")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
             }
         }
         "configure" => {
@@ -396,7 +598,8 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 let updater = match app_clone.updater() {
                     Ok(u) => u,
                     Err(e) => {
-                        app_clone.dialog()
+                        app_clone
+                            .dialog()
                             .message(format!("Updater non configuré : {}", e))
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Error)
@@ -411,10 +614,14 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                         let msg = if body.is_empty() {
                             format!("v{} disponible. Installer maintenant ?", version)
                         } else {
-                            format!("v{} disponible.\n\n{}\n\nInstaller maintenant ?", version, body)
+                            format!(
+                                "v{} disponible.\n\n{}\n\nInstaller maintenant ?",
+                                version, body
+                            )
                         };
                         let app_for_install = app_clone.clone();
-                        app_clone.dialog()
+                        app_clone
+                            .dialog()
                             .message(msg)
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Info)
@@ -425,9 +632,15 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                                 }
                                 let app = app_for_install.clone();
                                 tauri::async_runtime::spawn(async move {
-                                    match update.download_and_install(|_chunk, _total| {}, || {}).await {
+                                    match update
+                                        .download_and_install(|_chunk, _total| {}, || {})
+                                        .await
+                                    {
                                         Ok(_) => {
-                                            tracing::info!("Update v{} installed — exiting", version);
+                                            tracing::info!(
+                                                "Update v{} installed — exiting",
+                                                version
+                                            );
                                             app.exit(0);
                                         }
                                         Err(e) => {
@@ -443,14 +656,19 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                             });
                     }
                     Ok(None) => {
-                        app_clone.dialog()
-                            .message(format!("Raguia Agent est à jour (v{})", env!("CARGO_PKG_VERSION")))
+                        app_clone
+                            .dialog()
+                            .message(format!(
+                                "Raguia Agent est à jour (v{})",
+                                env!("CARGO_PKG_VERSION")
+                            ))
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Info)
                             .show(|_| {});
                     }
                     Err(e) => {
-                        app_clone.dialog()
+                        app_clone
+                            .dialog()
                             .message(format!("Erreur vérification : {}", e))
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Error)
@@ -464,33 +682,55 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             tauri::async_runtime::spawn(async move {
                 let version = env!("CARGO_PKG_VERSION");
                 let msg = format!("Raguia Agent v{}\n\nAgent de synchronisation de bureau\npour la plateforme Raguia.\n\n© Raguia", version);
-                app_clone.dialog()
-                    .message(msg).title("À propos")
+                app_clone
+                    .dialog()
+                    .message(msg)
+                    .title("À propos")
                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                     .show(|_| {});
             });
         }
 
         // ── Admin submenu items ──────────────────────────────
-
         "admin_info" => {
             let logs = LOG_CAPTURE.get_logs(100).join("\n");
-            let logs_section = if logs.is_empty() { "Aucun log.".into() } else { logs };
-            let queue_section = app.try_state::<AppState>()
+            let logs_section = if logs.is_empty() {
+                "Aucun log.".into()
+            } else {
+                logs
+            };
+            let queue_section = app
+                .try_state::<AppState>()
                 .and_then(|s| {
                     let stats = s.queue_store.get_stats().ok()?;
                     let stuck = s.queue_store.stuck_count().unwrap_or(0);
-                    Some(format!("Attente:{}  Suppr:{}  Sync:{}  Bloque:{}", stats.pending, stats.pending_delete, stats.synced, stuck))
+                    Some(format!(
+                        "Attente:{}  Suppr:{}  Sync:{}  Bloque:{}",
+                        stats.pending, stats.pending_delete, stats.synced, stuck
+                    ))
                 })
                 .unwrap_or_else(|| "File: N/A".into());
-            let config_section = app.try_state::<AppState>()
+            let config_section = app
+                .try_state::<AppState>()
                 .and_then(|s| s.config_manager.load_config().ok())
-                .map(|c| format!("API:{}  Slug:{}  Poll:{}s  Dry:{}", c.api_url, c.client_slug, c.poll_interval_secs, c.dry_run))
+                .map(|c| {
+                    format!(
+                        "API:{}  Slug:{}  Poll:{}s  Dry:{}",
+                        c.api_url, c.client_slug, c.poll_interval_secs, c.dry_run
+                    )
+                })
                 .unwrap_or_else(|| "Config: N/A".into());
-            let msg = format!("=== MODE ADMIN ===\n\n--- LOGS ---\n{}\n\n--- FILE ---\n{}\n\n--- CONFIG ---\n{}", logs_section, queue_section, config_section);
+            let msg = format!(
+                "=== MODE ADMIN ===\n\n--- LOGS ---\n{}\n\n--- FILE ---\n{}\n\n--- CONFIG ---\n{}",
+                logs_section, queue_section, config_section
+            );
             let a = app.clone();
             tauri::async_runtime::spawn(async move {
-                a.dialog().message(&msg).title("Admin Panel").kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                a.dialog()
+                    .message(&msg)
+                    .title("Admin Panel")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
             });
         }
         "dry_run" => {
@@ -498,11 +738,20 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 let mut cfg = state.config_manager.load_config().unwrap_or_default();
                 cfg.dry_run = !cfg.dry_run;
                 let msg = match state.config_manager.save_config(&cfg) {
-                    Ok(_) => format!("Dry-Run: {}", if cfg.dry_run { "ACTIVÉ" } else { "DÉSACTIVÉ" }),
+                    Ok(_) => format!(
+                        "Dry-Run: {}",
+                        if cfg.dry_run {
+                            "ACTIVÉ"
+                        } else {
+                            "DÉSACTIVÉ"
+                        }
+                    ),
                     Err(e) => format!("Erreur: {}", e),
                 };
                 let a = app.clone();
-                a.dialog().message(&msg).title("Dry-Run")
+                a.dialog()
+                    .message(&msg)
+                    .title("Dry-Run")
                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                     .show(|_| {});
                 tracing::info!("Dry-Run toggled to {}", cfg.dry_run);
@@ -511,12 +760,21 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         "toggle_autostart" => {
             let a = app.clone();
             let enabled = a.autolaunch().is_enabled().unwrap_or(false);
-            let result = if enabled { a.autolaunch().disable() } else { a.autolaunch().enable() };
+            let result = if enabled {
+                a.autolaunch().disable()
+            } else {
+                a.autolaunch().enable()
+            };
             let msg = match result {
-                Ok(_) => format!("Autostart: {}", if !enabled { "ACTIVÉ" } else { "DÉSACTIVÉ" }),
+                Ok(_) => format!(
+                    "Autostart: {}",
+                    if !enabled { "ACTIVÉ" } else { "DÉSACTIVÉ" }
+                ),
                 Err(e) => format!("Erreur: {}", e),
             };
-            a.dialog().message(&msg).title("Autostart")
+            a.dialog()
+                .message(&msg)
+                .title("Autostart")
                 .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                 .show(|_| {});
             tracing::info!("Autostart toggled (was enabled={})", enabled);
@@ -526,35 +784,68 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             {
                 let ac = app.clone();
                 std::thread::spawn(move || {
-                    let current = ac.try_state::<AppState>()
+                    let current = ac
+                        .try_state::<AppState>()
                         .and_then(|s| s.config_manager.load_config().ok())
-                        .map(|c| c.api_url).unwrap_or_default();
-                    let script = format!(r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#, current);
-                    let out = std::process::Command::new("osascript").args(["-e", &script]).output();
+                        .map(|c| c.api_url)
+                        .unwrap_or_default();
+                    let script = format!(
+                        r#"display dialog "Nouvel endpoint API:" default answer "{}" buttons {{"Annuler", "OK"}} default button "OK""#,
+                        current
+                    );
+                    let out = std::process::Command::new("osascript")
+                        .args(["-e", &script])
+                        .output();
                     match out {
                         Ok(o) => {
                             let s = String::from_utf8_lossy(&o.stdout);
-                            if !s.contains("button returned:OK") { return; }
-                            let url = s.lines().find_map(|l| l.strip_prefix("text returned:")).unwrap_or("").trim().trim_end_matches('/').to_string();
-                            if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
-                                ac.dialog().message("URL invalide. Doit commencer par http:// ou https://").title("Erreur")
-                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
+                            if !s.contains("button returned:OK") {
+                                return;
+                            }
+                            let url = s
+                                .lines()
+                                .find_map(|l| l.strip_prefix("text returned:"))
+                                .unwrap_or("")
+                                .trim()
+                                .trim_end_matches('/')
+                                .to_string();
+                            if url.is_empty()
+                                || (!url.starts_with("http://") && !url.starts_with("https://"))
+                            {
+                                ac.dialog()
+                                    .message("URL invalide. Doit commencer par http:// ou https://")
+                                    .title("Erreur")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                    .show(|_| {});
+                                return;
                             }
                             if let Some(st) = ac.try_state::<AppState>() {
                                 let mut cfg = match st.config_manager.load_config() {
-                                    Ok(c) => c, Err(e) => {
-                                        ac.dialog().message(format!("Erreur config: {}", e)).title("Erreur")
-                                            .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        ac.dialog()
+                                            .message(format!("Erreur config: {}", e))
+                                            .title("Erreur")
+                                            .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                            .show(|_| {});
+                                        return;
                                     }
                                 };
                                 cfg.api_url = url.clone();
                                 if let Err(e) = st.config_manager.save_config(&cfg) {
-                                    ac.dialog().message(format!("Erreur sauvegarde: {}", e)).title("Erreur")
-                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}); return;
+                                    ac.dialog()
+                                        .message(format!("Erreur sauvegarde: {}", e))
+                                        .title("Erreur")
+                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                        .show(|_| {});
+                                    return;
                                 }
                                 st.api_client.set_api_url(&url);
-                                ac.dialog().message(format!("Endpoint changé vers :\n{}", url)).title("Succès")
-                                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                                ac.dialog()
+                                    .message(format!("Endpoint changé vers :\n{}", url))
+                                    .title("Succès")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                                    .show(|_| {});
                                 tracing::info!("API endpoint changed to {}", url);
                             }
                         }
@@ -581,13 +872,19 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                         let msg = format!("Config rechargée.\n\nAPI: {}\nSlug: {}\nWatch: {}\nDry-Run: {}\nAdmin: {}",
                             cfg.api_url, cfg.client_slug, cfg.root_path().display(), cfg.dry_run, cfg.admin_mode);
                         let a = app.clone();
-                        a.dialog().message(&msg).title("Config rechargée")
-                            .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                        a.dialog()
+                            .message(&msg)
+                            .title("Config rechargée")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                            .show(|_| {});
                     }
                     Err(e) => {
                         let a = app.clone();
-                        a.dialog().message(format!("Erreur: {}", e)).title("Erreur")
-                            .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
+                        a.dialog()
+                            .message(format!("Erreur: {}", e))
+                            .title("Erreur")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                            .show(|_| {});
                     }
                 }
             }
@@ -595,23 +892,38 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         "test_api" => {
             let ac = app.clone();
             tauri::async_runtime::spawn(async move {
-                let url = ac.try_state::<AppState>()
+                let url = ac
+                    .try_state::<AppState>()
                     .and_then(|s| s.config_manager.load_config().ok())
                     .map(|c| format!("{}/health", c.api_url.trim_end_matches('/')))
                     .unwrap_or_default();
                 let result = match reqwest::get(&url).await {
-                    Ok(r) => format!("✅ {} {}\n\nStatus: {}", url, if r.status().is_success() { "OK" } else { "ERREUR" }, r.status()),
+                    Ok(r) => format!(
+                        "✅ {} {}\n\nStatus: {}",
+                        url,
+                        if r.status().is_success() {
+                            "OK"
+                        } else {
+                            "ERREUR"
+                        },
+                        r.status()
+                    ),
                     Err(e) => format!("❌ {}\n\n{}", url, e),
                 };
-                ac.dialog().message(&result).title("Test API")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                ac.dialog()
+                    .message(&result)
+                    .title("Test API")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
             });
         }
         "export_logs" => {
             let ac = app.clone();
             std::thread::spawn(move || {
                 let logs = LOG_CAPTURE.get_logs(500).join("\n");
-                let path = ac.dialog().file()
+                let path = ac
+                    .dialog()
+                    .file()
                     .add_filter("Logs", &["txt", "log"])
                     .set_file_name("raguia-agent.log")
                     .blocking_save_file();
@@ -622,31 +934,49 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                         tmp
                     });
                     match std::fs::write(&save_path, &logs) {
-                        Ok(_) => ac.dialog().message("Logs exportés ✓").title("Succès")
-                            .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {}),
-                        Err(e) => ac.dialog().message(format!("Erreur écriture: {}", e)).title("Erreur")
-                            .kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {}),
+                        Ok(_) => ac
+                            .dialog()
+                            .message("Logs exportés ✓")
+                            .title("Succès")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                            .show(|_| {}),
+                        Err(e) => ac
+                            .dialog()
+                            .message(format!("Erreur écriture: {}", e))
+                            .title("Erreur")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                            .show(|_| {}),
                     }
                 }
             });
         }
         "config_path" => {
             if let Some(state) = app.try_state::<AppState>() {
-                let path = state.config_manager.store_path().to_string_lossy().to_string();
+                let path = state
+                    .config_manager
+                    .store_path()
+                    .to_string_lossy()
+                    .to_string();
                 let msg = format!("Fichier config :\n{}\n\nÉditez-le manuellement puis utilisez « Recharger config »", path);
-                app.dialog().message(&msg).title("Chemin config")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                app.dialog()
+                    .message(&msg)
+                    .title("Chemin config")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
             }
         }
         "show_queue" => {
             if let Some(state) = app.try_state::<AppState>() {
                 let msg = match state.queue_store.get_stats() {
-                    Ok(s) => format!("File d'attente\n\nEn attente: {}\nSuppressions: {}\nSynced: {}\nBloqués: {}\n\nUtilisez « Recharger config » pour réinitialiser les bloqués.",
+                    Ok(s) => format!("File d'attente\n\nEn attente: {}\nSuppressions: {}\nSynced: {}\nBloqués: {}\n\nUtilisez « Réinitialiser les fichiers bloqués » si nécessaire.",
                         s.pending, s.pending_delete, s.synced, s.stuck),
                     Err(e) => format!("Erreur: {}", e),
                 };
-                app.dialog().message(&msg).title("File d'attente")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
+                app.dialog()
+                    .message(&msg)
+                    .title("File d'attente")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                    .show(|_| {});
             }
         }
         _ => {}
@@ -666,8 +996,7 @@ fn handle_tray_icon_event(_tray: &TrayIcon<tauri::Wry>, event: TrayIconEvent) {
 }
 
 /// Run the Raguia Agent application
-static LOG_CAPTURE: LazyLock<log_capture::LogCapture> =
-    LazyLock::new(log_capture::LogCapture::new);
+static LOG_CAPTURE: LazyLock<log_capture::LogCapture> = LazyLock::new(log_capture::LogCapture::new);
 
 pub fn run() {
     let log_capture = LOG_CAPTURE.clone();
@@ -738,14 +1067,16 @@ pub fn run() {
                 }
             };
 
-            let watcher = Arc::new(tokio::sync::Mutex::new(
-                watcher::Watcher::new(config_manager.clone(), queue_store.clone()),
-            ));
+            let watcher = Arc::new(tokio::sync::Mutex::new(watcher::Watcher::new(
+                config_manager.clone(),
+                queue_store.clone(),
+            )));
 
             // ── Sync engine signals ──
             let wake_signal = Arc::new(tokio::sync::Notify::new());
             let stop_signal = Arc::new(AtomicBool::new(false));
             let force_sync = Arc::new(AtomicBool::new(false));
+            let engine_running = Arc::new(AtomicBool::new(false));
             let engine_stopped = Arc::new(tokio::sync::Notify::new());
 
             // ── Check if configured → show wizard or start engine ──
@@ -756,7 +1087,11 @@ pub fn run() {
                 .unwrap_or(false);
 
             // Set initial tray icon
-            let initial_status = if is_configured { "idle" } else { "disconnected" };
+            let initial_status = if is_configured {
+                "idle"
+            } else {
+                "disconnected"
+            };
             {
                 let rgba = decode_png_icon(initial_status);
                 if let Some((data, w, h)) = rgba {
@@ -779,35 +1114,14 @@ pub fn run() {
                 wake_signal: wake_signal.clone(),
                 stop_signal: stop_signal.clone(),
                 force_sync: force_sync.clone(),
+                engine_running: engine_running.clone(),
                 engine_stopped: engine_stopped.clone(),
             });
 
             if is_configured {
-                // Start the sync engine background task
-                let engine_wake = wake_signal.clone();
-                let engine_stop = stop_signal.clone();
-                let engine_force = force_sync.clone();
-                let engine_app = app.handle().clone();
-                let engine_config = config_manager.clone();
-                let engine_api = api_client.clone();
-                let engine_queue = queue_store.clone();
-                let engine_watcher = watcher.clone();
-                let engine_done = engine_stopped.clone();
-
-                tauri::async_runtime::spawn(async move {
-                    engine::run_sync_loop(
-                        engine_app,
-                        engine_config,
-                        engine_api,
-                        engine_queue,
-                        engine_watcher,
-                        engine_wake,
-                        engine_stop,
-                        engine_force,
-                        engine_done,
-                    )
-                    .await;
-                });
+                if let Some(state) = app.try_state::<AppState>() {
+                    start_sync_engine(app.handle(), &state);
+                }
 
                 tracing::info!("Sync engine started (existing configuration)");
             } else {
@@ -828,6 +1142,7 @@ pub fn run() {
             health,
             get_stats,
             sync_now,
+            get_config,
             login,
             get_home_dir,
             get_os_kind,
@@ -858,3 +1173,26 @@ fn decode_png_icon(status: &str) -> Option<(Vec<u8>, u32, u32)> {
 #[allow(dead_code)]
 #[inline]
 fn icon_unused<T>(_: T) {}
+
+#[cfg(test)]
+mod tests {
+    use super::watch_parent_from_selection;
+
+    #[test]
+    fn watch_selection_accepts_parent_directory() {
+        let parent = watch_parent_from_selection("/Users/alice/Documents", "RAGUIA");
+        assert_eq!(parent, std::path::PathBuf::from("/Users/alice/Documents"));
+    }
+
+    #[test]
+    fn watch_selection_accepts_root_directory_without_doubling_it() {
+        let parent = watch_parent_from_selection("/Users/alice/Documents/RAGUIA", "RAGUIA");
+        assert_eq!(parent, std::path::PathBuf::from("/Users/alice/Documents"));
+    }
+
+    #[test]
+    fn watch_selection_handles_case_insensitive_root_name() {
+        let parent = watch_parent_from_selection("/Users/alice/Documents/raguia", "RAGUIA");
+        assert_eq!(parent, std::path::PathBuf::from("/Users/alice/Documents"));
+    }
+}

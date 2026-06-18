@@ -120,7 +120,7 @@ impl Watcher {
                     }
                 }
             })
-            .expect("Failed to spawn watcher thread");
+            .map_err(|e| WatcherError::Config(e.to_string()))?;
 
         self.inner = Some(watcher);
         self.root = root.clone();

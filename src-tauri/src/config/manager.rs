@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager as _;
@@ -88,6 +89,78 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn normalized(mut self) -> Self {
+        let defaults = Self::default();
+
+        self.api_url = self.api_url.trim().trim_end_matches('/').to_string();
+        if self.api_url.is_empty() {
+            self.api_url = defaults.api_url;
+        }
+
+        self.client_slug = self.client_slug.trim().to_string();
+        let mut root_name = self
+            .root_folder_name
+            .trim()
+            .trim_matches(|c| c == '/' || c == '\\')
+            .chars()
+            .map(|c| {
+                if c.is_control()
+                    || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect::<String>()
+            .trim()
+            .to_string();
+        if root_name == "." || root_name == ".." {
+            root_name.clear();
+        }
+        self.root_folder_name = if root_name.is_empty() {
+            defaults.root_folder_name
+        } else {
+            root_name
+        };
+
+        if self.watch_parent.as_os_str().is_empty() {
+            self.watch_parent = defaults.watch_parent;
+        }
+
+        self.poll_interval_secs = self.poll_interval_secs.clamp(5, 3600);
+        self.stability_secs = self.stability_secs.clamp(1, 3600);
+        self.sync_cooldown_secs = self.sync_cooldown_secs.min(86_400);
+        self.burst_threshold = self.burst_threshold.clamp(1, 10_000);
+        self.max_files_per_cycle = self.max_files_per_cycle.clamp(1, 500);
+        self.auto_update_check_hours = self.auto_update_check_hours.clamp(1, 168);
+
+        let mut seen = BTreeSet::new();
+        let extensions: Vec<String> = self
+            .supported_extensions
+            .into_iter()
+            .filter_map(|ext| {
+                let ext = ext.trim().trim_start_matches('.').to_lowercase();
+                if ext.is_empty() {
+                    return None;
+                }
+                let ext = format!(".{}", ext);
+                if seen.insert(ext.clone()) {
+                    Some(ext)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.supported_extensions = if extensions.is_empty() {
+            defaults.supported_extensions
+        } else {
+            extensions
+        };
+
+        self
+    }
+
     /// Chemin complet du dossier surveillé : watch_parent / root_folder_name
     pub fn root_path(&self) -> PathBuf {
         self.watch_parent.join(&self.root_folder_name)
@@ -418,12 +491,14 @@ impl Manager {
                 .or_else(|| store.get("_sk").and_then(|v| v.as_bool()))
                 .unwrap_or(defaults.admin_mode),
             supported_extensions,
-        })
+        }
+        .normalized())
     }
 
     /// Persist the full application configuration to the encrypted store.
     pub fn save_config(&self, config: &AppConfig) -> Result<(), ConfigError> {
         let store = self.store()?;
+        let config = config.clone().normalized();
 
         store.set("api_url", serde_json::json!(config.api_url));
         store.set("client_slug", serde_json::json!(config.client_slug));
@@ -462,5 +537,86 @@ impl Manager {
         );
 
         store.save().map_err(|e| ConfigError::Store(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalized_clamps_cost_and_sync_settings() {
+        let cfg = AppConfig {
+            api_url: " https://example.test/ ".into(),
+            watch_parent: PathBuf::new(),
+            root_folder_name: " /RAGUIA/ ".into(),
+            poll_interval_secs: 0,
+            stability_secs: 0,
+            sync_cooldown_secs: 999_999,
+            burst_threshold: 0,
+            max_files_per_cycle: 0,
+            auto_update_check_hours: 0,
+            supported_extensions: vec!["PDF".into(), ".pdf".into(), "  txt ".into(), "".into()],
+            ..AppConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(cfg.api_url, "https://example.test");
+        assert_eq!(cfg.root_folder_name, "RAGUIA");
+        assert_eq!(cfg.poll_interval_secs, 5);
+        assert_eq!(cfg.stability_secs, 1);
+        assert_eq!(cfg.sync_cooldown_secs, 86_400);
+        assert_eq!(cfg.burst_threshold, 1);
+        assert_eq!(cfg.max_files_per_cycle, 1);
+        assert_eq!(cfg.auto_update_check_hours, 1);
+        assert_eq!(cfg.supported_extensions, vec![".pdf", ".txt"]);
+        assert!(!cfg.watch_parent.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn normalized_restores_safe_root_and_extensions() {
+        let cfg = AppConfig {
+            api_url: "".into(),
+            root_folder_name: " / ".into(),
+            supported_extensions: vec![],
+            ..AppConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(cfg.api_url, AppConfig::default().api_url);
+        assert_eq!(cfg.root_folder_name, "RAGUIA");
+        assert_eq!(
+            cfg.supported_extensions,
+            AppConfig::default().supported_extensions
+        );
+    }
+
+    #[test]
+    fn normalized_keeps_root_folder_name_as_single_directory() {
+        let nested = AppConfig {
+            root_folder_name: " RAGUIA/Archive\\2026 ".into(),
+            ..AppConfig::default()
+        }
+        .normalized();
+        let parent = AppConfig {
+            root_folder_name: "..".into(),
+            ..AppConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(nested.root_folder_name, "RAGUIA_Archive_2026");
+        assert_eq!(parent.root_folder_name, "RAGUIA");
+    }
+
+    #[test]
+    fn normalized_removes_windows_invalid_folder_chars() {
+        let cfg = AppConfig {
+            root_folder_name: r#"RA:GU*IA?"<>|"#.into(),
+            ..AppConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(cfg.root_folder_name, "RA_GU_IA_____");
     }
 }

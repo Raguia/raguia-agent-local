@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -53,6 +53,14 @@ pub struct Store {
     conn: Arc<std::sync::Mutex<Connection>>,
 }
 
+fn normalize_rel_path(rel_path: &str) -> String {
+    rel_path
+        .replace('\\', "/")
+        .trim()
+        .trim_matches('/')
+        .to_string()
+}
+
 impl Store {
     /// Open (or create) the queue database at ``db_dir / sync_queue.sqlite``.
     pub fn new(db_dir: &Path) -> Result<Self, QueueError> {
@@ -77,13 +85,17 @@ impl Store {
                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
 
-             -- Bug E: tracks how many consecutive times a file was skipped
-             -- because it was deemed unstable. Caps re-enqueue loops.
-             ALTER TABLE sync_queue ADD COLUMN unstable_attempts INTEGER NOT NULL DEFAULT 0;
-
              CREATE INDEX IF NOT EXISTS idx_queue_status ON sync_queue(status);
              CREATE INDEX IF NOT EXISTS idx_queue_rel_path ON sync_queue(rel_path);",
         )?;
+
+        if !column_exists(&conn, "sync_queue", "unstable_attempts")? {
+            conn.execute(
+                "ALTER TABLE sync_queue ADD COLUMN unstable_attempts INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        normalize_existing_rel_paths(&conn)?;
 
         Ok(Self {
             conn: Arc::new(std::sync::Mutex::new(conn)),
@@ -101,6 +113,10 @@ impl Store {
         abs_path: &str,
         event_type: &str,
     ) -> Result<(), QueueError> {
+        let rel_path = normalize_rel_path(rel_path);
+        if rel_path.is_empty() {
+            return Ok(());
+        }
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO sync_queue (rel_path, abs_path, event_type, status)
@@ -120,6 +136,7 @@ impl Store {
     /// Increment the unstable-attempts counter for a re-enqueued file.
     /// Returns the new value so the caller can decide whether to give up.
     pub fn bump_unstable(&self, rel_path: &str) -> Result<u32, QueueError> {
+        let rel_path = normalize_rel_path(rel_path);
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE sync_queue
@@ -205,6 +222,7 @@ impl Store {
 
     /// Mark an entry as successfully synced.
     pub fn mark_done(&self, rel_path: &str) -> Result<(), QueueError> {
+        let rel_path = normalize_rel_path(rel_path);
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE sync_queue
@@ -219,13 +237,30 @@ impl Store {
 
     /// Mark an entry as failed with an error message and increment attempts.
     pub fn mark_error(&self, rel_path: &str, error: &str) -> Result<(), QueueError> {
+        let rel_path = normalize_rel_path(rel_path);
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE sync_queue SET status = 'failed', attempts = attempts + 1,
-             error = ?2, updated_at = datetime('now') WHERE rel_path = ?1",
-            params![rel_path, error],
+            "UPDATE sync_queue
+             SET attempts = attempts + 1,
+                 status = CASE WHEN attempts + 1 >= ?3 THEN 'failed' ELSE 'pending' END,
+                 error = ?2,
+                 updated_at = datetime('now')
+             WHERE rel_path = ?1",
+            params![rel_path, error, MAX_TRIES_BEFORE_STUCK],
         )?;
         Ok(())
+    }
+
+    /// Reset entries left in syncing state after a crash.
+    pub fn reset_syncing(&self) -> Result<u64, QueueError> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute(
+            "UPDATE sync_queue SET status = 'pending', error = '',
+             updated_at = datetime('now')
+             WHERE status = 'syncing'",
+            [],
+        )?;
+        Ok(count as u64)
     }
 
     /// Reset all stuck or orphaned entries back to pending (attempts=0).
@@ -315,5 +350,283 @@ impl Store {
             params![format!("-{} days", keep_days)],
         )?;
         Ok(deleted as u64)
+    }
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Debug)]
+struct QueueRow {
+    id: i64,
+    rel_path: String,
+    abs_path: String,
+    event_type: String,
+    status: String,
+    attempts: i64,
+    error: String,
+    unstable_attempts: i64,
+}
+
+fn read_queue_row(conn: &Connection, id: i64) -> Result<QueueRow, rusqlite::Error> {
+    conn.query_row(
+        "SELECT id, rel_path, abs_path, event_type, status, attempts, error, unstable_attempts
+         FROM sync_queue WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(QueueRow {
+                id: row.get(0)?,
+                rel_path: row.get(1)?,
+                abs_path: row.get(2)?,
+                event_type: row.get(3)?,
+                status: row.get(4)?,
+                attempts: row.get(5)?,
+                error: row.get(6)?,
+                unstable_attempts: row.get(7)?,
+            })
+        },
+    )
+}
+
+fn merge_status(a: &str, b: &str) -> &'static str {
+    if matches!(a, "pending" | "syncing") || matches!(b, "pending" | "syncing") {
+        "pending"
+    } else if a == "failed" || b == "failed" {
+        "failed"
+    } else {
+        "synced"
+    }
+}
+
+fn merge_duplicate_rel_path(
+    conn: &Connection,
+    existing_id: i64,
+    incoming: &QueueRow,
+    normalized: &str,
+) -> Result<(), rusqlite::Error> {
+    let existing = read_queue_row(conn, existing_id)?;
+    let abs_path = if incoming.abs_path.is_empty() {
+        existing.abs_path
+    } else {
+        incoming.abs_path.clone()
+    };
+    let event_type = if incoming.event_type == "deleted" || existing.event_type != "deleted" {
+        incoming.event_type.clone()
+    } else {
+        existing.event_type
+    };
+    let status = merge_status(&existing.status, &incoming.status);
+    let attempts = existing.attempts.max(incoming.attempts);
+    let error = if incoming.error.is_empty() {
+        existing.error
+    } else {
+        incoming.error.clone()
+    };
+    let unstable_attempts = existing.unstable_attempts.max(incoming.unstable_attempts);
+
+    conn.execute(
+        "UPDATE sync_queue
+         SET rel_path = ?2,
+             abs_path = ?3,
+             event_type = ?4,
+             status = ?5,
+             attempts = ?6,
+             error = ?7,
+             unstable_attempts = ?8,
+             updated_at = datetime('now')
+         WHERE id = ?1",
+        params![
+            existing_id,
+            normalized,
+            abs_path,
+            event_type,
+            status,
+            attempts,
+            error,
+            unstable_attempts,
+        ],
+    )?;
+    conn.execute("DELETE FROM sync_queue WHERE id = ?1", params![incoming.id])?;
+    Ok(())
+}
+
+fn normalize_existing_rel_paths(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT id FROM sync_queue ORDER BY id")?;
+    let ids: Vec<i64> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+
+    for id in ids {
+        let row = match read_queue_row(conn, id).optional()? {
+            Some(row) => row,
+            None => continue,
+        };
+        let normalized = normalize_rel_path(&row.rel_path);
+        if normalized.is_empty() {
+            conn.execute("DELETE FROM sync_queue WHERE id = ?1", params![id])?;
+            continue;
+        }
+        if normalized == row.rel_path {
+            continue;
+        }
+
+        let existing_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM sync_queue WHERE rel_path = ?1 AND id != ?2 LIMIT 1",
+                params![normalized, id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if let Some(existing_id) = existing_id {
+            merge_duplicate_rel_path(conn, existing_id, &row, &normalized)?;
+        } else {
+            conn.execute(
+                "UPDATE sync_queue SET rel_path = ?2, updated_at = datetime('now') WHERE id = ?1",
+                params![id, normalized],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "raguia-agent-{}-{}-{}",
+            name,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn store_can_open_existing_db_after_migration() {
+        let dir = temp_db_dir("migration");
+        let first = Store::new(&dir).unwrap();
+        first.enqueue("a.pdf", "/tmp/a.pdf", "modified").unwrap();
+        drop(first);
+
+        let second = Store::new(&dir).unwrap();
+        assert_eq!(second.pending_count().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enqueue_normalizes_windows_relative_paths() {
+        let dir = temp_db_dir("relpath");
+        let store = Store::new(&dir).unwrap();
+        store
+            .enqueue(r"Factures\2026\a.pdf", "/tmp/a.pdf", "modified")
+            .unwrap();
+        store
+            .enqueue("Factures/2026/a.pdf", "/tmp/a2.pdf", "modified")
+            .unwrap();
+
+        let batch = store.pop_batch(10, 0.0, MAX_TRIES_BEFORE_STUCK).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].rel_path, "Factures/2026/a.pdf");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn migration_merges_existing_windows_path_duplicates() {
+        let dir = temp_db_dir("relpath-migration");
+        let db_path = dir.join("sync_queue.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sync_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rel_path TEXT NOT NULL UNIQUE,
+                    abs_path TEXT NOT NULL DEFAULT '',
+                    event_type TEXT NOT NULL DEFAULT 'modified',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sync_queue (rel_path, abs_path, event_type, status, attempts)
+                 VALUES (?1, ?2, 'modified', 'synced', 0)",
+                params!["Factures/2026/a.pdf", "/tmp/old.pdf"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sync_queue (rel_path, abs_path, event_type, status, attempts)
+                 VALUES (?1, ?2, 'deleted', 'pending', 3)",
+                params![r"Factures\2026\a.pdf", "/tmp/new.pdf"],
+            )
+            .unwrap();
+        }
+
+        let store = Store::new(&dir).unwrap();
+        let batch = store.pop_batch(10, 0.0, MAX_TRIES_BEFORE_STUCK).unwrap();
+
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].rel_path, "Factures/2026/a.pdf");
+        assert_eq!(batch[0].abs_path, "/tmp/new.pdf");
+        assert_eq!(batch[0].event_type, "deleted");
+        assert_eq!(batch[0].attempts, 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mark_error_retries_before_stuck() {
+        let dir = temp_db_dir("retries");
+        let store = Store::new(&dir).unwrap();
+        store.enqueue("a.pdf", "/tmp/a.pdf", "modified").unwrap();
+
+        for _ in 0..MAX_TRIES_BEFORE_STUCK - 1 {
+            store.mark_error("a.pdf", "network").unwrap();
+            assert_eq!(store.pending_count().unwrap(), 1);
+            assert_eq!(store.stuck_count().unwrap(), 0);
+        }
+
+        store.mark_error("a.pdf", "network").unwrap();
+        assert_eq!(store.pending_count().unwrap(), 0);
+        assert_eq!(store.stuck_count().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reset_syncing_recovers_crash_left_entries() {
+        let dir = temp_db_dir("syncing");
+        let store = Store::new(&dir).unwrap();
+        store.enqueue("a.pdf", "/tmp/a.pdf", "modified").unwrap();
+        assert_eq!(
+            store
+                .pop_batch(1, 0.0, MAX_TRIES_BEFORE_STUCK)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert_eq!(store.reset_syncing().unwrap(), 1);
+        assert_eq!(store.pending_count().unwrap(), 1);
+        assert_eq!(store.stuck_count().unwrap(), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

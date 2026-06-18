@@ -63,7 +63,7 @@ pub struct SyncStatus {
     #[serde(default)]
     pub remote_deletions: Vec<RemoteDeletion>,
     #[serde(default)]
-    pub local_agent_enabled: bool,
+    pub local_agent_enabled: Option<bool>,
 }
 
 /// A remote deletion instruction
@@ -260,7 +260,7 @@ impl Client {
 
     fn url(&self, path: &str) -> String {
         let api_url = self.api_url.read().unwrap_or_else(|e| e.into_inner());
-        format!("{}{}", api_url, path)
+        format!("{}{}", api_url.trim_end_matches('/'), path)
     }
 
     // ─── Retry logic ──────────────────────────────────────────
@@ -346,7 +346,8 @@ impl Client {
             }
         }
 
-        Err(last_error.expect("All retries exhausted but no last_error captured"))
+        Err(last_error
+            .unwrap_or_else(|| ApiError::Config("Requête épuisée sans erreur capturée".into())))
     }
 
     /// Extract error detail from response body
@@ -559,18 +560,9 @@ impl Client {
             .text("dry_run", dry_run.to_string().to_lowercase());
 
         for (i, path) in paths.iter().enumerate() {
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file")
-                .to_string();
-
-            let bytes = tokio::fs::read(path)
+            let part = reqwest::multipart::Part::file(path)
                 .await
-                .map_err(|e| ApiError::FileLocked(format!("{}: {}", path.display(), e)))?;
-
-            let part = reqwest::multipart::Part::bytes(bytes)
-                .file_name(filename)
+                .map_err(|e| ApiError::FileLocked(format!("{}: {}", path.display(), e)))?
                 .mime_str("application/octet-stream")
                 .map_err(|e| ApiError::Config(e.to_string()))?;
 
@@ -604,10 +596,7 @@ impl Client {
                 403 => Err(ApiError::Forbidden(
                     detail.unwrap_or_else(|| "Accès refusé".into()),
                 )),
-                code => Err(ApiError::Server(
-                    detail.unwrap_or(status_str),
-                    code,
-                )),
+                code => Err(ApiError::Server(detail.unwrap_or(status_str), code)),
             };
         }
 
@@ -714,12 +703,7 @@ impl Client {
         let url = self.url("/api/portal/agent/version");
 
         let resp = self
-            .request_with_retry(
-                reqwest::Method::GET,
-                &url,
-                None,
-                Duration::from_secs(30),
-            )
+            .request_with_retry(reqwest::Method::GET, &url, None, Duration::from_secs(30))
             .await?;
 
         let info: VersionInfo = resp
@@ -740,5 +724,20 @@ impl Client {
             Err(ApiError::Unauthorized) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncStatus;
+
+    #[test]
+    fn sync_status_local_agent_enabled_is_backward_compatible() {
+        let missing: SyncStatus = serde_json::from_str("{}").unwrap();
+        let disabled: SyncStatus =
+            serde_json::from_str(r#"{"local_agent_enabled": false}"#).unwrap();
+
+        assert_eq!(missing.local_agent_enabled, None);
+        assert_eq!(disabled.local_agent_enabled, Some(false));
     }
 }
