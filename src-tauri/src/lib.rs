@@ -396,7 +396,7 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 let updater = match app_clone.updater() {
                     Ok(u) => u,
                     Err(e) => {
-                        let _ = app_clone.dialog()
+                        app_clone.dialog()
                             .message(format!("Updater non configuré : {}", e))
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Error)
@@ -414,7 +414,7 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                             format!("v{} disponible.\n\n{}\n\nInstaller maintenant ?", version, body)
                         };
                         let app_for_install = app_clone.clone();
-                        let _ = app_clone.dialog()
+                        app_clone.dialog()
                             .message(msg)
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Info)
@@ -432,7 +432,7 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                                         }
                                         Err(e) => {
                                             tracing::error!("Update install failed: {}", e);
-                                            let _ = app.dialog()
+                                            app.dialog()
                                                 .message(format!("Échec installation : {}", e))
                                                 .title("Mise à jour")
                                                 .kind(MessageDialogKind::Error)
@@ -443,14 +443,14 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                             });
                     }
                     Ok(None) => {
-                        let _ = app_clone.dialog()
+                        app_clone.dialog()
                             .message(format!("Raguia Agent est à jour (v{})", env!("CARGO_PKG_VERSION")))
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Info)
                             .show(|_| {});
                     }
                     Err(e) => {
-                        let _ = app_clone.dialog()
+                        app_clone.dialog()
                             .message(format!("Erreur vérification : {}", e))
                             .title("Mise à jour")
                             .kind(MessageDialogKind::Error)
@@ -631,9 +631,8 @@ fn handle_tray_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             });
         }
         "config_path" => {
-            if app.try_state::<AppState>().is_some() {
-                let m = config::Manager::new(app);
-                let path = m.store_path().to_string_lossy().to_string();
+            if let Some(state) = app.try_state::<AppState>() {
+                let path = state.config_manager.store_path().to_string_lossy().to_string();
                 let msg = format!("Fichier config :\n{}\n\nÉditez-le manuellement puis utilisez « Recharger config »", path);
                 app.dialog().message(&msg).title("Chemin config")
                     .kind(tauri_plugin_dialog::MessageDialogKind::Info).show(|_| {});
@@ -688,8 +687,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .setup(|app| {

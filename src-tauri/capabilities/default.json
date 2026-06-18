@@ -1,24 +1,11 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Raguia Agent (tray-only app, no windows)",
-  "windows": ["*"],
+  "description": "Wizard-only JS permissions for Raguia Agent",
+  "windows": ["wizard"],
   "permissions": [
     "core:default",
     "core:window:default",
     "core:window:allow-close",
-    "core:window:allow-set-size",
-    "core:window:allow-center",
-    "dialog:default",
-    "dialog:allow-open",
-    "dialog:allow-message",
-    "dialog:allow-ask",
-    "dialog:allow-confirm",
-    "store:default",
-    "fs:default",
-    "shell:default",
-    "shell:allow-open",
-    "opener:default",
-    "updater:default",
-    "autostart:default"
+    "dialog:allow-open"
   ]
 }

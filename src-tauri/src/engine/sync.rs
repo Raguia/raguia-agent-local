@@ -242,7 +242,7 @@ pub async fn run_sync_loop(
 
         // ── Reload config periodically (detect wizard/UI changes) ──
         config_reload_counter += 1;
-        if config_reload_counter.is_multiple_of(6) {
+        if config_reload_counter % 6 == 0 {
             if let Ok(refreshed) = config.load_config() {
                 // Detect changes that affect the running loop
                 let changed = refreshed.api_url != cfg.api_url

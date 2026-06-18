@@ -190,7 +190,7 @@ impl Manager {
                 Ok(()) => {
                     // Also clear the fallback copy
                     if let Ok(store) = self.store() {
-                        store.delete(&fallback_key(key));
+                        store.delete(fallback_key(key));
                         let _ = store.save();
                     }
                     Ok(())
@@ -232,7 +232,7 @@ impl Manager {
             let _ = entry.delete_password();
         }
         if let Ok(store) = self.store() {
-            store.delete(&fallback_key(key));
+            store.delete(fallback_key(key));
             let _ = store.save();
         }
         Ok(())
@@ -240,14 +240,14 @@ impl Manager {
 
     fn store_fallback_set(&self, key: &str, value: &str) -> Result<(), ConfigError> {
         let store = self.store()?;
-        store.set(&fallback_key(key), serde_json::json!(value));
+        store.set(fallback_key(key), serde_json::json!(value));
         store.save().map_err(|e| ConfigError::Store(e.to_string()))
     }
 
     fn store_fallback_get(&self, key: &str) -> Option<String> {
         let store = self.store().ok()?;
         store
-            .get(&fallback_key(key))
+            .get(fallback_key(key))
             .and_then(|v| v.as_str().map(String::from))
     }
 
